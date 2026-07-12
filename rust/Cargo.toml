@@ -1,0 +1,24 @@
+[workspace]
+# CBAE Rust workspace — two crates:
+#
+#   cbae_batchd  The batch processing daemon
+#     Replaces src/batch/*.c with Rust.
+#     WHY HERE: The batch processor manages a thread pool,
+#     a persistent job queue, and shared mutable state across
+#     worker threads.  In C this is the highest-risk component
+#     for data races and use-after-free bugs.  Rust's ownership
+#     model makes data races a compile-time error and eliminates
+#     that entire bug class with zero runtime overhead.
+#
+#   cbae_ipc     Typed IPC protocol (daemon ↔ GUI)
+#     Replaces the Unix socket / named pipe message serialisation.
+#     WHY HERE: IPC parsing is a classic attack surface — malformed
+#     messages from a compromised GUI process could exploit a buffer
+#     overflow in C.  Rust's slice bounds checking makes this
+#     impossible by design.  The crate compiles to a C-compatible
+#     static library via cbindgen so the C engine calls it via FFI.
+members = [
+    "cbae_batchd",
+    "cbae_ipc",
+]
+resolver = "2"

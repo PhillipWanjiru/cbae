@@ -1,0 +1,24 @@
+[package]
+name    = "cbae_batchd"
+version = "0.1.0"
+edition = "2021"
+
+# Produces a static C library the CMake build links into cbae_engine
+[lib]
+name   = "cbae_batchd"
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+# crossbeam-channel: lock-free multi-producer multi-consumer queue
+# Perfect for the job queue: workers pull from one end, scheduler pushes to the other
+crossbeam-channel = "0.5"
+# rusqlite: safe SQLite bindings — reads/writes the same DB as the C layer
+rusqlite = { version = "0.31", features = ["bundled"] }
+# serde + serde_json: typed job record serialisation
+serde      = { version = "1", features = ["derive"] }
+serde_json = "1"
+# log + env_logger: structured logging that integrates with cbae_log_write via FFI
+log        = "0.4"
+
+[dev-dependencies]
+tempfile = "3"

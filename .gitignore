@@ -1,0 +1,10 @@
+build/
+*.o
+*.a
+*.so
+__pycache__/
+*.pyc
+*.db
+*.db-wal
+*.db-shm
+rust/target/
