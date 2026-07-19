@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(cbae VERSION 0.2.0 LANGUAGES C CXX)
+project(cbae VERSION 0.3.0 LANGUAGES C CXX)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
@@ -20,10 +20,34 @@ endif()
 find_package(Threads REQUIRED)
 find_package(SQLite3 REQUIRED)
 
-include_directories(${CMAKE_SOURCE_DIR}/include ${SQLite3_INCLUDE_DIRS})
+# Capstone -- no official CMake FindCapstone module ships with cmake, so
+# locate it via pkg-config first and fall back to a manual search for
+# environments (like plain apt-get libcapstone-dev) that don't ship a
+# .pc file either.
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+    pkg_check_modules(CAPSTONE QUIET capstone)
+endif()
+if(NOT CAPSTONE_FOUND)
+    find_path(CAPSTONE_INCLUDE_DIRS capstone/capstone.h)
+    find_library(CAPSTONE_LIBRARIES NAMES capstone)
+    if(CAPSTONE_INCLUDE_DIRS AND CAPSTONE_LIBRARIES)
+        set(CAPSTONE_FOUND TRUE)
+    endif()
+endif()
+if(NOT CAPSTONE_FOUND)
+    message(FATAL_ERROR "Capstone not found. Install libcapstone-dev.")
+endif()
+
+include_directories(
+    ${CMAKE_SOURCE_DIR}/include
+    ${SQLite3_INCLUDE_DIRS}
+    ${CAPSTONE_INCLUDE_DIRS}
+)
 
 # ── LAYER 1: cbae_platform ────────────────────────────────────────────────────
-# cbae_error.c lives here — it has no dependencies and is called by every layer.
+# cbae_error.c lives here -- it has no dependencies and is called by every
+# layer above it.
 add_library(cbae_platform STATIC
     src/engine/cbae_error.c
     src/platform/memory_arena.c
@@ -63,19 +87,29 @@ add_library(cbae_loader STATIC
 )
 target_link_libraries(cbae_loader PUBLIC cbae_platform)
 
-# ── Rust integration (optional — requires cargo in PATH) ─────────────────────
-# The Rust crates produce static libraries that extend the C engine.
-# cbae_batchd replaces src/batch/*.c with memory-safe Rust.
-# cbae_ipc    provides the typed IPC message layer with Rust's safety guarantees.
-#
-# To build Rust: cmake -DWITH_RUST=ON ..
+# ── LAYER 5: cbae_disasm (Phase 3) ───────────────────────────────────────────
+# Disassembly, CFG construction, call graph, function/SEH discovery.
+# Depends on cbae_loader (binary_image) and cbae_platform, plus Capstone.
+add_library(cbae_disasm STATIC
+    src/disasm/disassembler.c
+    src/disasm/instruction_lifter.c
+    src/disasm/operand_decoder.c
+    src/disasm/cfg_builder.c
+    src/disasm/cfg_edge_classifier.c
+    src/disasm/call_graph_builder.c
+    src/disasm/indirect_call_resolver.c
+    src/disasm/function_boundary_finder.c
+    src/disasm/seh_handler_detector.c
+)
+target_link_libraries(cbae_disasm PUBLIC cbae_loader cbae_platform ${CAPSTONE_LIBRARIES})
+
+# ── Rust integration (optional -- requires cargo in PATH) ────────────────────
 option(WITH_RUST "Build Rust crates (requires cargo)" OFF)
 
 if(WITH_RUST)
     find_program(CARGO_EXE cargo)
     if(CARGO_EXE)
         set(RUST_TARGET_DIR ${CMAKE_BINARY_DIR}/rust_target)
-
         add_custom_target(rust_crates ALL
             COMMAND ${CARGO_EXE} build
                 --manifest-path ${CMAKE_SOURCE_DIR}/rust/Cargo.toml
@@ -83,33 +117,30 @@ if(WITH_RUST)
                 $<$<NOT:$<CONFIG:Debug>>:--release>
             COMMENT "Building Rust crates (cbae_batchd, cbae_ipc)"
         )
-
         set(RUST_LIB_DIR ${RUST_TARGET_DIR}/debug)
         if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
             set(RUST_LIB_DIR ${RUST_TARGET_DIR}/release)
         endif()
-
         add_library(cbae_batchd_rs STATIC IMPORTED)
         set_target_properties(cbae_batchd_rs PROPERTIES
             IMPORTED_LOCATION ${RUST_LIB_DIR}/libcbae_batchd.a)
         add_dependencies(cbae_batchd_rs rust_crates)
-
         add_library(cbae_ipc_rs STATIC IMPORTED)
         set_target_properties(cbae_ipc_rs PROPERTIES
             IMPORTED_LOCATION ${RUST_LIB_DIR}/libcbae_ipc.a)
         add_dependencies(cbae_ipc_rs rust_crates)
-
         target_link_libraries(cbae_engine PUBLIC cbae_batchd_rs cbae_ipc_rs)
         message(STATUS "Rust crates enabled: cbae_batchd, cbae_ipc")
     else()
-        message(WARNING "WITH_RUST=ON but cargo not found — skipping Rust build")
+        message(WARNING "WITH_RUST=ON but cargo not found -- skipping Rust build")
     endif()
 endif()
 
 enable_testing()
 add_subdirectory(tests)
 
-message(STATUS "CBAE ${PROJECT_VERSION} — build type: ${CMAKE_BUILD_TYPE}")
-message(STATUS "  SQLite3: ${SQLite3_LIBRARIES}")
-message(STATUS "  Layers:  platform -> db -> engine -> loader")
-message(STATUS "  Rust:    ${WITH_RUST} (cmake -DWITH_RUST=ON .. to enable)")
+message(STATUS "CBAE ${PROJECT_VERSION} -- build type: ${CMAKE_BUILD_TYPE}")
+message(STATUS "  SQLite3:  ${SQLite3_LIBRARIES}")
+message(STATUS "  Capstone: ${CAPSTONE_LIBRARIES}")
+message(STATUS "  Layers:   platform -> db -> engine -> loader -> disasm")
+message(STATUS "  Rust:     ${WITH_RUST} (cmake -DWITH_RUST=ON .. to enable)")
