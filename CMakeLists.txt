@@ -103,6 +103,19 @@ add_library(cbae_disasm STATIC
 )
 target_link_libraries(cbae_disasm PUBLIC cbae_loader cbae_platform ${CAPSTONE_LIBRARIES})
 
+# ── LAYER 6: cbae_cir (Phase 4) ───────────────────────────────────────────────
+# CIR type system, builder, and printer. The lifter and SSA constructor
+# source files are added incrementally as Phase 4 progresses -- see
+# docs/architecture/PHASE4.md for the staged build/test plan.
+add_library(cbae_cir STATIC
+    src/cir/cir_opcodes.c
+    src/cir/cir_type.c
+    src/cir/cir_builder.c
+    src/cir/cir_module.c
+    src/cir/cir_printer.c
+)
+target_link_libraries(cbae_cir PUBLIC cbae_platform cbae_disasm)
+
 # ── Rust integration (optional -- requires cargo in PATH) ────────────────────
 option(WITH_RUST "Build Rust crates (requires cargo)" OFF)
 

@@ -24,3 +24,6 @@ cbae_add_test(test_disassembler      unit/test_disassembler.c      cbae_disasm c
 cbae_add_test(test_cfg_builder       unit/test_cfg_builder.c       cbae_disasm cbae_loader)
 cbae_add_test(test_indirect_resolver unit/test_indirect_resolver.c cbae_disasm cbae_loader)
 cbae_add_test(test_loader_to_disasm  unit/test_loader_to_disasm.c  cbae_disasm cbae_loader)
+
+# ── Phase 4 — CIR Design & Lifting ────────────────────────────────────────
+cbae_add_test(test_cir_builder       unit/test_cir_builder.c       cbae_cir cbae_disasm cbae_loader)
