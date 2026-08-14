@@ -113,6 +113,12 @@ add_library(cbae_cir STATIC
     src/cir/cir_builder.c
     src/cir/cir_module.c
     src/cir/cir_printer.c
+    src/cir/cir_lifter.c
+    src/cir/cir_lifter_memory.c
+    src/cir/cir_lifter_io.c
+    src/cir/cir_lifter_call.c
+    src/cir/cir_lifter_arithmetic.c
+    src/cir/cir_lifter_branch.c
 )
 target_link_libraries(cbae_cir PUBLIC cbae_platform cbae_disasm)
 
