@@ -26,6 +26,29 @@ void cir_lift_reg_map_reset(cir_lift_ctx_t *ctx) {
 }
 
 cbae_cir_value_t *cir_lift_read_reg(cir_lift_ctx_t *ctx, cbae_reg_t reg) {
+    /* CBAE_REG_OTHER is Phase 3's catch-all for every narrow (32/16/8-bit)
+     * register form -- EAX, AX, AL, EBX, BX, ... all map to this SAME
+     * enum value. Caching/tracking it as a single reg_map slot would
+     * incorrectly alias unrelated narrow registers together. Rather
+     * than track it wrongly, every read of a CBAE_REG_OTHER operand
+     * gets its own FRESH, never-cached placeholder -- correctly
+     * unresolvable rather than silently wrong. Compiler-generated
+     * kernel driver code overwhelmingly uses full 64-bit or 32-bit
+     * (Capstone-mapped) register forms for the registers CBAE tracks;
+     * this only affects the narrow-form edge cases already documented
+     * as a known simplification. */
+    if (reg == CBAE_REG_OTHER) {
+        cbae_cir_value_t *v = CBAE_ARENA_ALLOC(ctx->func->arena, cbae_cir_value_t);
+        if (!v) return NULL;
+        v->kind = CIR_VAL_REG_ENTRY;
+        v->type = cir_type_i(64);
+        v->id   = ctx->func->next_value_id++;
+        v->u.reg_entry.reg      = reg;
+        v->u.reg_entry.block_id = ctx->cir_block->id;
+        cbae_vector_push(&ctx->func->values, &v);
+        return v;
+    }
+
     if (reg <= CBAE_REG_NONE || (int)reg >= CIR_REG_MAP_SIZE) return NULL;
     if (ctx->reg_map[reg]) return ctx->reg_map[reg];
 
@@ -46,6 +69,11 @@ cbae_cir_value_t *cir_lift_read_reg(cir_lift_ctx_t *ctx, cbae_reg_t reg) {
 }
 
 void cir_lift_write_reg(cir_lift_ctx_t *ctx, cbae_reg_t reg, cbae_cir_value_t *value) {
+    /* Writes to a CBAE_REG_OTHER (narrow-form) destination are silently
+     * dropped rather than corrupting the shared slot -- see the read
+     * side's comment above for why this register class can't be
+     * tracked precisely in Phase 4's model. */
+    if (reg == CBAE_REG_OTHER) return;
     if (reg <= CBAE_REG_NONE || (int)reg >= CIR_REG_MAP_SIZE) return;
     ctx->reg_map[reg] = value;
 }

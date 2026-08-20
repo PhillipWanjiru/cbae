@@ -6,6 +6,7 @@
 #define CBAE_CIR_LIFTER_H
 
 #include "cir_function.h"
+#include "cir_builder.h"
 #include "disasm/cfg.h"
 #include "disasm/call_graph.h"
 #include "loader/binary_image.h"

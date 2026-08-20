@@ -27,3 +27,4 @@ cbae_add_test(test_loader_to_disasm  unit/test_loader_to_disasm.c  cbae_disasm c
 
 # ── Phase 4 — CIR Design & Lifting ────────────────────────────────────────
 cbae_add_test(test_cir_builder       unit/test_cir_builder.c       cbae_cir cbae_disasm cbae_loader)
+cbae_add_test(test_cir_lifter        unit/test_cir_lifter.c        cbae_cir cbae_disasm cbae_loader)
