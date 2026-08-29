@@ -213,6 +213,15 @@ cbae_err_t cbae_cir_lift_function(const cbae_binary_image_t *img,
                     break;
             }
         }
+
+        /* Persist this block's ending register state -- the SSA
+         * constructor needs it to know what THIS block contributes to
+         * a successor's phi, which is a different question from what
+         * an unresolved placeholder created WITHIN this block should
+         * resolve to. See cir_block.h's final_reg_state comment and
+         * cir_ssa_constructor.c's resolve_entry_value vs
+         * read_predecessor_value for the full reasoning. */
+        memcpy(cb->final_reg_state, ctx.reg_map, sizeof(ctx.reg_map));
     }
 
     *out = func;

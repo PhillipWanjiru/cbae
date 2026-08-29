@@ -49,7 +49,9 @@
 #include "disasm/instruction.h"
 #include "loader/binary_image.h"
 
-#define CIR_REG_MAP_SIZE 32   /* comfortably covers every cbae_reg_t value */
+#define CIR_REG_MAP_SIZE CIR_BLOCK_REG_SLOTS  /* reuse the canonical size
+                                                * from cir_block.h so the two
+                                                * never drift apart          */
 
 typedef struct cir_lift_ctx {
     const cbae_binary_image_t *img;

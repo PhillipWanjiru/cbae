@@ -74,6 +74,7 @@ cbae_err_t cbae_cir_block_create(cbae_cir_function_t *func, cbae_addr_t start_ad
     b->instruction_count    = 0;
     b->instruction_capacity = CIR_BLOCK_INSN_INIT_CAP;
     b->successor_count       = 0;
+    memset(b->final_reg_state, 0, sizeof(b->final_reg_state));
 
     cbae_err_t e = cbae_vector_init(&b->predecessors, sizeof(uint32_t), 4);
     if (e != CBAE_OK) return e;
