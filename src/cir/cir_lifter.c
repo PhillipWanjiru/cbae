@@ -222,6 +222,25 @@ cbae_err_t cbae_cir_lift_function(const cbae_binary_image_t *img,
          * cir_ssa_constructor.c's resolve_entry_value vs
          * read_predecessor_value for the full reasoning. */
         memcpy(cb->final_reg_state, ctx.reg_map, sizeof(ctx.reg_map));
+
+        /* Uniformly connect every edge Phase 3 recorded for this
+         * block, regardless of what caused the block to end.
+         * cir_lift_branch_insn's JCC/JMP handling already created
+         * these via cbae_cir_branch()/cbae_cir_jump() internally, so
+         * those get a harmless idempotent no-op here -- but CALL-
+         * ending blocks (whose CALL_RETURN successor cir_lift_call_insn
+         * never wires up) and blocks that end via pure STRUCTURAL
+         * convergence (falling into an already-known block boundary
+         * with no branch/jump/call instruction at the transition point
+         * at all -- exactly what happens to a block truncated by
+         * Phase 3's mid-block split logic) would otherwise never get a
+         * CIR-level predecessor/successor edge at all, silently
+         * breaking the SSA constructor's cross-block resolution. */
+        for (int si = 0; si < xb->successor_count; si++) {
+            cbae_addr_t succ_addr = xb->successors[si].target;
+            cbae_cir_block_t *succ_cb = cbae_cir_function_block_at(func, succ_addr);
+            if (succ_cb) cbae_cir_block_add_edge(cb, succ_cb);
+        }
     }
 
     *out = func;

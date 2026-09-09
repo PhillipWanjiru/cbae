@@ -97,6 +97,18 @@ cbae_cir_block_t *cbae_cir_function_block_at(const cbae_cir_function_t *func,
 
 cbae_err_t cbae_cir_block_add_edge(cbae_cir_block_t *from, cbae_cir_block_t *to) {
     if (!from || !to) CBAE_RETURN_ERR(CBAE_ERR_INVALID, "null block");
+
+    /* Idempotent: calling this twice for the same from->to edge is a
+     * no-op, not an error. This lets a dispatcher-level sweep safely
+     * re-add edges that a builder call (cbae_cir_branch/cbae_cir_jump)
+     * already created, so the sweep can uniformly cover the cases that
+     * DON'T go through those builder calls (CALL-ending blocks, and
+     * blocks that end via pure structural convergence with no explicit
+     * branch/jump/call instruction at the transition point at all)
+     * without needing to track "was this edge already added" state. */
+    for (uint32_t i = 0; i < from->successor_count; i++)
+        if (from->successors[i] == to->id) return CBAE_OK;
+
     if (from->successor_count >= CIR_BLOCK_MAX_SUCCESSORS)
         CBAE_RETURN_ERR(CBAE_ERR_INVALID, "block already has max successors");
     from->successors[from->successor_count++] = to->id;
