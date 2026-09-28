@@ -125,6 +125,15 @@ add_library(cbae_cir STATIC
 )
 target_link_libraries(cbae_cir PUBLIC cbae_platform cbae_disasm)
 
+# ── LAYER 7: cbae_dataflow (Phase 5) ──────────────────────────────────────────
+# Dominator tree, post-dominator tree, generic dataflow engine, alias
+# analysis, reaching stores, use-def chains, constant propagation.
+# Depends on cbae_cir (operates on lifted, SSA-form CIR functions).
+add_library(cbae_dataflow STATIC
+    src/dataflow/dominator_tree.c
+)
+target_link_libraries(cbae_dataflow PUBLIC cbae_cir cbae_platform)
+
 # ── Rust integration (optional -- requires cargo in PATH) ────────────────────
 option(WITH_RUST "Build Rust crates (requires cargo)" OFF)
 
