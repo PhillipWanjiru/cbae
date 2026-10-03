@@ -17,6 +17,7 @@
 #include "dataflow/dominator_tree.h"
 #include "cir/cir_builder.h"
 #include "platform/logging.h"
+#include "dom_reference.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -215,6 +216,144 @@ static void t_nested_diamond(void) {
     printf("  [PASS] nested diamond: deep idom chain + 7-block frontier all correct\n");
 }
 
+/* ── Shape 5: the ENTRY block is itself a loop header ────────────────────
+ *
+ *   0 -> 1;  1 -> {0, 2}      (block 1 jumps back to the function's first
+ *                              block, e.g. a tight loop with no prologue)
+ *
+ * Entry dominates everything; 1 dominates 1 and 2.
+ * By the definition DF(a) = { b : a dominates a predecessor of b and a
+ * does not strictly dominate b }:
+ *   b = 0: predecessor 1. 0 dominates 1 and does not strictly dominate
+ *          itself  -> 0 in DF(0).  1 dominates 1 and does not dominate 0
+ *          -> 0 in DF(1).
+ *   b = 1: predecessor 0. Only 0 dominates 0, but 0 strictly dominates 1
+ *          -> nothing.
+ *   b = 2: predecessor 1. 1 dominates 1 but strictly dominates 2 -> no.
+ *   So DF(0) = {0}, DF(1) = {0}, DF(2) = {}.
+ * The entry has only ONE predecessor here; it still counts as a join
+ * because the function's own entry is an implicit second incoming edge.
+ * (Found by the randomized cross-check below, which is why it is pinned
+ * here by hand.) */
+static void t_entry_is_loop_header(void) {
+    cbae_arena_t arena; cbae_arena_init(&arena, 64 * 1024);
+    const uint32_t edges[][2] = { {0,1}, {1,0}, {1,2} };
+    cbae_cir_function_t *f = make_cfg(&arena, 3, edges, 3);
+
+    cbae_dom_tree_t dt;
+    assert(cbae_dom_tree_build(f, &arena, &dt) == CBAE_OK);
+    assert(cbae_dom_tree_idom(&dt, 0) == 0);
+    assert(cbae_dom_tree_idom(&dt, 1) == 0);
+    assert(cbae_dom_tree_idom(&dt, 2) == 1);
+
+    cbae_dom_frontier_t df;
+    assert(cbae_dom_frontier_compute(&dt, &df) == CBAE_OK);
+    const uint32_t just0[] = {0};
+    assert(df_equals(&df, 0, just0, 1));
+    assert(df_equals(&df, 1, just0, 1));
+    assert(df_equals(&df, 2, NULL, 0));
+
+    cbae_dom_frontier_destroy(&df);
+    cbae_dom_tree_destroy(&dt);
+    cbae_cir_function_destroy(f);
+    cbae_arena_destroy(&arena);
+    printf("  [PASS] entry that is a loop header: entry in its own frontier\n");
+}
+
+/* ── Randomized cross-check against the brute-force reference ───────────
+ *
+ * Random CFGs (every block reachable from entry, at most two successors
+ * per block, with back edges, cross edges, self-loops and irreducible
+ * regions) are run through both the production tree and the independent
+ * set-based reference in dom_reference.h. They must agree on:
+ *   - every immediate dominator,
+ *   - every dominates(a, b) pair,
+ *   - every dominance frontier, where the reference frontier comes
+ *     straight from the definition:
+ *         DF(a) = { b : a dominates some predecessor of b,
+ *                       and a does not strictly dominate b }.  */
+static void check_one_random(const rgraph_t *g) {
+    const uint32_t n = g->n;
+
+    uint64_t dom[RG_MAX_NODES];
+    ref_dominators(n, 0, g->e, g->m, dom);
+
+    cbae_arena_t arena; cbae_arena_init(&arena, 256 * 1024);
+    cbae_cir_function_t *f = make_cfg(&arena, n, g->e, g->m);
+
+    cbae_dom_tree_t dt;
+    if (cbae_dom_tree_build(f, &arena, &dt) != CBAE_OK) {
+        rg_dump(g);
+        assert(0 && "cbae_dom_tree_build failed");
+    }
+    cbae_dom_frontier_t df;
+    assert(cbae_dom_frontier_compute(&dt, &df) == CBAE_OK);
+
+    for (uint32_t b = 0; b < n; b++) {
+        uint32_t want = ref_idom(n, 0, dom, b);
+        uint32_t got  = cbae_dom_tree_idom(&dt, b);
+        if (got != want) {
+            rg_dump(g);
+            fprintf(stderr, "  block %u: idom got %u, want %u\n", b, got, want);
+            assert(0 && "idom mismatch");
+        }
+        for (uint32_t a = 0; a < n; a++) {
+            bool want_d = (dom[b] >> a) & 1;
+            bool got_d  = cbae_dom_tree_dominates(&dt, a, b);
+            if (want_d != got_d) {
+                rg_dump(g);
+                fprintf(stderr, "  dominates(%u,%u): got %d, want %d\n",
+                        a, b, got_d, want_d);
+                assert(0 && "dominates mismatch");
+            }
+        }
+    }
+
+    for (uint32_t a = 0; a < n; a++) {
+        uint64_t want_df = 0;
+        for (uint32_t i = 0; i < g->m; i++) {
+            uint32_t p = g->e[i][0], b = g->e[i][1];
+            bool a_dom_pred   = (dom[p] >> a) & 1;
+            bool a_strict_dom = (a != b) && ((dom[b] >> a) & 1);
+            if (a_dom_pred && !a_strict_dom) want_df |= 1ull << b;
+        }
+        const cbae_vector_t *v = cbae_dom_frontier_of(&df, a);
+        uint64_t got_df = 0;
+        for (uint32_t j = 0; j < cbae_vector_count(v); j++)
+            got_df |= 1ull << *(const uint32_t *)cbae_vector_at(v, j);
+        if (got_df != want_df) {
+            rg_dump(g);
+            fprintf(stderr, "  DF(%u): got mask %llx, want %llx\n", a,
+                    (unsigned long long)got_df, (unsigned long long)want_df);
+            assert(0 && "dominance frontier mismatch");
+        }
+    }
+
+    cbae_dom_frontier_destroy(&df);
+    cbae_dom_tree_destroy(&dt);
+    cbae_cir_function_destroy(f);
+    cbae_arena_destroy(&arena);
+}
+
+static void t_random_vs_reference(void) {
+    rng_t rng = { 0xD1B54A32D192ED03ull };
+    uint32_t looped = 0;
+
+    for (uint32_t k = 0; k < 3000; k++) {
+        uint32_t n = 1 + rng_next(&rng) % 14;
+        rgraph_t g;
+        rg_generate(&g, &rng, n);
+        check_one_random(&g);
+
+        /* Count graphs that actually contain a cycle, so the summary
+         * shows the loop/irreducible paths were exercised. */
+        for (uint32_t i = 0; i < g.m; i++)
+            if (g.e[i][1] <= g.e[i][0]) { looped++; break; }
+    }
+    printf("  [PASS] 3000 random CFGs match the brute-force reference "
+           "(idom, dominates, frontier; %u contained back/self edges)\n", looped);
+}
+
 int main(void) {
     printf("=== test_dominator_tree ===\n");
     cbae_log_init(CBAE_LOG_WARN, NULL, 0);
@@ -223,6 +362,8 @@ int main(void) {
     t_diamond();
     t_loop();
     t_nested_diamond();
+    t_entry_is_loop_header();
+    t_random_vs_reference();
 
     printf("All dominator tree tests passed.\n");
     return 0;

@@ -1,185 +1,15 @@
 /**
  * @file dominator_tree.c
- * @brief Cooper-Harvey-Kennedy dominator tree construction.
- *
- * FOUR STEPS:
- *   1. Iterative postorder DFS over the CFG (explicit stack, not
- *      recursion -- avoids any stack-depth risk on unusually large
- *      functions), reversed into an RPO numbering.
- *   2. The CHK fixed-point loop itself: for each block in increasing
- *      RPO order, intersect the already-known idoms of its
- *      predecessors. Terminates because every non-entry block in a
- *      REDUCIBLE cfg (true for all compiler-generated code -- no
- *      goto-spaghetti irreducible loops) has at least one predecessor
- *      with strictly smaller RPO number, guaranteeing that predecessor
- *      is already resolved on the very first pass.
- *   3. Build dominator-tree children[] lists directly from idom[].
- *   4. A second DFS -- this time over the DOMINATOR TREE, not the CFG
- *      -- assigns [enter,exit] intervals so dominates(a,b) becomes an
- *      O(1) interval-containment check afterward.
+ * @brief Forward dominator tree of a CIR function, plus dominance
+ *        frontier. The dominator computation itself is the shared
+ *        Cooper-Harvey-Kennedy core in dom_core.c; this file adapts a
+ *        CIR function's CFG to it and exposes the query API.
  */
 #include "dataflow/dominator_tree.h"
+#include "dom_core.h"
 #include "platform/logging.h"
 #include <stdlib.h>
 #include <string.h>
-
-/* ── Step 1: postorder DFS -> RPO ─────────────────────────────────────── */
-
-typedef struct { uint32_t block_id; uint32_t next_child; } dfs_frame_t;
-
-static cbae_err_t compute_rpo(const cbae_cir_function_t *func, uint32_t nblocks,
-                               uint32_t *rpo_order, uint32_t *rpo_number) {
-    bool *visited = calloc(nblocks, sizeof(bool));
-    dfs_frame_t *stack = malloc(sizeof(dfs_frame_t) * nblocks);
-    uint32_t *postorder = malloc(sizeof(uint32_t) * nblocks);
-    if (!visited || !stack || !postorder) {
-        free(visited); free(stack); free(postorder);
-        CBAE_RETURN_ERR(CBAE_ERR_OOM, "dominator tree: DFS scratch alloc failed");
-    }
-
-    uint32_t pcount = 0;
-    int sp = 0;
-    stack[sp].block_id = 0; /* entry is always block 0, per the id==index
-                              * invariant every CIR block creation upholds */
-    stack[sp].next_child = 0;
-    visited[0] = true;
-    sp++;
-
-    while (sp > 0) {
-        dfs_frame_t *top = &stack[sp - 1];
-        cbae_cir_block_t **bp =
-            cbae_vector_at(&func->blocks, top->block_id);
-        cbae_cir_block_t *blk = *bp;
-
-        if (top->next_child < blk->successor_count) {
-            uint32_t succ_id = blk->successors[top->next_child];
-            top->next_child++;
-            if (!visited[succ_id]) {
-                visited[succ_id] = true;
-                stack[sp].block_id = succ_id;
-                stack[sp].next_child = 0;
-                sp++;
-            }
-        } else {
-            postorder[pcount++] = top->block_id;
-            sp--;
-        }
-    }
-
-    /* Every block Phase 3/4 create is reachable from entry by
-     * construction (recursive-descent CFG building) -- a mismatch
-     * here means an invariant elsewhere was violated, not a normal
-     * runtime condition. */
-    if (pcount != nblocks) {
-        free(visited); free(stack); free(postorder);
-        CBAE_RETURN_ERR(CBAE_ERR_INVALID,
-            "dominator tree: %u of %u blocks unreachable from entry "
-            "(function's CFG should be fully connected by construction)",
-            nblocks - pcount, nblocks);
-    }
-
-    /* RPO is simply postorder reversed. */
-    for (uint32_t i = 0; i < nblocks; i++) {
-        uint32_t block_id = postorder[nblocks - 1 - i];
-        rpo_order[i] = block_id;
-        rpo_number[block_id] = i;
-    }
-
-    free(visited);
-    free(stack);
-    free(postorder);
-    return CBAE_OK;
-}
-
-/* ── Step 2: the CHK fixed-point loop ─────────────────────────────────── */
-
-static uint32_t intersect(const uint32_t *idom, const uint32_t *rpo_number,
-                           uint32_t b1, uint32_t b2) {
-    uint32_t f1 = b1, f2 = b2;
-    while (f1 != f2) {
-        while (rpo_number[f1] > rpo_number[f2]) f1 = idom[f1];
-        while (rpo_number[f2] > rpo_number[f1]) f2 = idom[f2];
-    }
-    return f1;
-}
-
-#define UNDEFINED_IDOM UINT32_MAX
-
-static void compute_idom(const cbae_cir_function_t *func, uint32_t nblocks,
-                          const uint32_t *rpo_order, const uint32_t *rpo_number,
-                          uint32_t *idom) {
-    for (uint32_t i = 0; i < nblocks; i++) idom[i] = UNDEFINED_IDOM;
-    idom[0] = 0; /* entry is its own immediate dominator, by convention */
-
-    bool changed = true;
-    while (changed) {
-        changed = false;
-        for (uint32_t rank = 1; rank < nblocks; rank++) {
-            uint32_t b = rpo_order[rank];
-            cbae_cir_block_t **bp = cbae_vector_at(&func->blocks, b);
-            cbae_cir_block_t *blk = *bp;
-            uint32_t npred = (uint32_t)cbae_vector_count(&blk->predecessors);
-
-            uint32_t new_idom = UNDEFINED_IDOM;
-            for (uint32_t pi = 0; pi < npred; pi++) {
-                uint32_t *pred_id = cbae_vector_at(&blk->predecessors, pi);
-                if (idom[*pred_id] == UNDEFINED_IDOM) continue;
-                new_idom = (new_idom == UNDEFINED_IDOM)
-                    ? *pred_id
-                    : intersect(idom, rpo_number, new_idom, *pred_id);
-            }
-
-            if (idom[b] != new_idom) {
-                idom[b] = new_idom;
-                changed = true;
-            }
-        }
-    }
-}
-
-/* ── Step 3 + 4: dominator-tree children[], then interval numbering ────── */
-
-static cbae_err_t build_children(uint32_t nblocks, const uint32_t *idom,
-                                  cbae_vector_t *children) {
-    for (uint32_t i = 0; i < nblocks; i++)
-        CBAE_CHECK(cbae_vector_init(&children[i], sizeof(uint32_t), 2));
-
-    for (uint32_t b = 1; b < nblocks; b++) /* entry (0) has no parent */
-        CBAE_CHECK(cbae_vector_push(&children[idom[b]], &b));
-
-    return CBAE_OK;
-}
-
-static void number_dom_tree(uint32_t nblocks, const cbae_vector_t *children,
-                             uint32_t *dt_enter, uint32_t *dt_exit) {
-    dfs_frame_t *stack = malloc(sizeof(dfs_frame_t) * nblocks);
-    uint32_t timer = 0;
-    int sp = 0;
-
-    stack[sp].block_id = 0;
-    stack[sp].next_child = 0;
-    dt_enter[0] = timer++;
-    sp++;
-
-    while (sp > 0) {
-        dfs_frame_t *top = &stack[sp - 1];
-        const cbae_vector_t *kids = &children[top->block_id];
-        uint32_t nkids = (uint32_t)cbae_vector_count(kids);
-
-        if (top->next_child < nkids) {
-            uint32_t *child_id = cbae_vector_at(kids, top->next_child);
-            top->next_child++;
-            dt_enter[*child_id] = timer++;
-            stack[sp].block_id = *child_id;
-            stack[sp].next_child = 0;
-            sp++;
-        } else {
-            dt_exit[top->block_id] = timer++;
-            sp--;
-        }
-    }
-    free(stack);
-}
 
 /* ── Public API ───────────────────────────────────────────────────────── */
 
@@ -203,10 +33,44 @@ cbae_err_t cbae_dom_tree_build(const cbae_cir_function_t *func,
         !out->dt_enter || !out->dt_exit || !out->children)
         CBAE_RETURN_ERR(CBAE_ERR_OOM, "dominator tree: array alloc failed");
 
-    CBAE_CHECK(compute_rpo(func, nblocks, out->rpo_order, out->rpo_number));
-    compute_idom(func, nblocks, out->rpo_order, out->rpo_number, out->idom);
-    CBAE_CHECK(build_children(nblocks, out->idom, out->children));
-    number_dom_tree(nblocks, out->children, out->dt_enter, out->dt_exit);
+    /* The CFG as an edge list. Entry is always block 0, per the
+     * id==index invariant every CIR block creation upholds. */
+    uint32_t nedges = 0;
+    for (uint32_t b = 0; b < nblocks; b++) {
+        const cbae_cir_block_t *blk = *(cbae_cir_block_t **)cbae_vector_at(&func->blocks, b);
+        nedges += blk->successor_count;
+    }
+    uint32_t *ef = malloc(sizeof(uint32_t) * (nedges ? nedges : 1));
+    uint32_t *et = malloc(sizeof(uint32_t) * (nedges ? nedges : 1));
+    if (!ef || !et) {
+        free(ef); free(et);
+        CBAE_RETURN_ERR(CBAE_ERR_OOM, "dominator tree: edge list alloc failed");
+    }
+    uint32_t ei = 0;
+    for (uint32_t b = 0; b < nblocks; b++) {
+        const cbae_cir_block_t *blk = *(cbae_cir_block_t **)cbae_vector_at(&func->blocks, b);
+        for (uint32_t k = 0; k < blk->successor_count; k++) {
+            ef[ei] = b;
+            et[ei] = blk->successors[k];
+            ei++;
+        }
+    }
+
+    dom_csr_t csr;
+    cbae_err_t rc = dom_csr_build(nblocks, ef, et, nedges, &csr);
+    free(ef);
+    free(et);
+    CBAE_CHECK(rc);
+
+    dom_graph_t g = { nblocks, 0, csr.succ_off, csr.succ_adj,
+                      csr.pred_off, csr.pred_adj };
+    rc = dom_core_compute(&g, "dominator tree",
+                          out->idom, out->rpo_order, out->rpo_number);
+    dom_csr_free(&csr);
+    CBAE_CHECK(rc);
+
+    CBAE_CHECK(dom_core_build_children(nblocks, 0, out->idom, out->children));
+    dom_core_number_tree(nblocks, 0, out->children, out->dt_enter, out->dt_exit);
 
     LOG_DEBUG("dominator tree built: %u blocks", nblocks);
     return CBAE_OK;
@@ -262,14 +126,26 @@ cbae_err_t cbae_dom_frontier_compute(const cbae_dom_tree_t *dt,
         cbae_cir_block_t **bp = cbae_vector_at(&dt->func->blocks, b);
         cbae_cir_block_t *blk = *bp;
         uint32_t npred = (uint32_t)cbae_vector_count(&blk->predecessors);
-        if (npred < 2) continue; /* only join points can be in a DF */
+
+        /* Only join points can be in a DF -- two or more incoming edges.
+         * The ENTRY block is the one exception: the function's own entry
+         * is an implicit extra incoming edge, so entry is a join as soon
+         * as ANY block jumps back to it (a function whose first block is
+         * a loop header). */
+        if (npred < (b == 0 ? 1u : 2u)) continue;
 
         for (uint32_t pi = 0; pi < npred; pi++) {
             uint32_t *pred_id = cbae_vector_at(&blk->predecessors, pi);
             uint32_t runner = *pred_id;
-            while (runner != dt->idom[b]) {
+            for (;;) {
+                /* idom(b) strictly dominates b, so b is not in ITS
+                 * frontier: stop before it. The entry has no such
+                 * block, and is not strictly dominated by anything, so
+                 * for b == 0 the walk continues through entry itself. */
+                if (b != 0 && runner == dt->idom[b]) break;
                 if (!vector_contains_u32(&out->frontier[runner], b))
                     cbae_vector_push(&out->frontier[runner], &b);
+                if (runner == 0) break;          /* nothing above the root */
                 runner = dt->idom[runner];
             }
         }

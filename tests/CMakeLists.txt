@@ -38,4 +38,5 @@ cbae_add_test(test_disasm_to_cir     unit/test_disasm_to_cir.c     cbae_cir cbae
 
 # ── Phase 5 — Dataflow Infrastructure ─────────────────────────────────────
 cbae_add_test(test_dominator_tree    unit/test_dominator_tree.c    cbae_dataflow cbae_cir cbae_disasm cbae_loader)
+cbae_add_test(test_post_dominator_tree unit/test_post_dominator_tree.c cbae_dataflow cbae_cir cbae_disasm cbae_loader)
 cbae_add_test(test_dataflow_engine   unit/test_dataflow_engine.c   cbae_dataflow cbae_cir cbae_disasm cbae_loader)
