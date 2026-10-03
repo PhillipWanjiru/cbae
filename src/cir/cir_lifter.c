@@ -154,12 +154,69 @@ cbae_err_t cbae_cir_lift_function(const cbae_binary_image_t *img,
 
     uint32_t nblocks = cbae_cfg_block_count(cfg);
 
+    /* CIR INVARIANT: block 0 is the function entry and has NO
+     * predecessors (the same rule LLVM IR enforces). Machine code can
+     * break it: when the first instruction is also a branch target
+     * (`foo: dec rcx; jnz foo; ret`) the entry block has a real
+     * predecessor, and then "the value of rcx on entry" is a merge of
+     * the caller's rcx and the loop's -- a phi whose one incoming edge
+     * comes from "the function's caller", which no block represents.
+     * The SSA constructor would have nothing to hang that incoming
+     * value on (and recurses forever looking for one).
+     *
+     * So in that case a SYNTHETIC entry block is created FIRST (id 0)
+     * whose only job is to jump to the real entry block. It stands for
+     * the function's entry edge: it has no predecessors, nothing in it
+     * writes a register, so every live-in register resolves through it
+     * to a CIR_VAL_PARAM, and the real entry block becomes an ordinary
+     * join (synthetic block + back edges) that gets a normal phi.
+     *
+     * The synthetic block shares the entry address. That is harmless:
+     * cbae_cir_block_create() registers it under that address first,
+     * and the real entry block's creation then re-points the address
+     * to itself, so cbae_cir_function_block_at(f, entry_addr) keeps
+     * answering "the real entry block", as it does for every function.
+     * Functions whose entry is NOT a branch target get no synthetic
+     * block and are lifted exactly as before. */
+    bool entry_is_branch_target = false;
+    for (uint32_t i = 0; i < nblocks && !entry_is_branch_target; i++) {
+        cbae_basic_block_t *xb = cbae_cfg_block_at_index(cfg, i);
+        for (int si = 0; si < xb->successor_count; si++) {
+            if (xb->successors[si].target == cfg->entry_addr) {
+                entry_is_branch_target = true;
+                break;
+            }
+        }
+    }
+
+    cbae_cir_block_t *synthetic_entry = NULL;
+    if (entry_is_branch_target) {
+        cbae_err_t e = cbae_cir_block_create(func, cfg->entry_addr, &synthetic_entry);
+        if (e != CBAE_OK) { cbae_cir_function_destroy(func); return e; }
+    }
+
     /* Pass 1: pre-create every CIR block. */
     for (uint32_t i = 0; i < nblocks; i++) {
         cbae_basic_block_t *xb = cbae_cfg_block_at_index(cfg, i);
         cbae_cir_block_t *cb;
         cbae_err_t e = cbae_cir_block_create(func, xb->start_addr, &cb);
         if (e != CBAE_OK) { cbae_cir_function_destroy(func); return e; }
+    }
+
+    /* Wire the synthetic entry to the real one BEFORE pass 2 adds the
+     * back edges, so it is the real entry block's FIRST predecessor and
+     * its phis list the function-entry value first, like any loop. */
+    if (synthetic_entry) {
+        cbae_cir_block_t *real_entry = cbae_cir_function_block_at(func, cfg->entry_addr);
+        if (!real_entry || real_entry == synthetic_entry) {
+            cbae_cir_function_destroy(func);
+            CBAE_RETURN_ERR(CBAE_ERR_INVALID,
+                "CFG has no block at its own entry address 0x%llx",
+                (unsigned long long)cfg->entry_addr);
+        }
+        cbae_cir_builder_t entry_builder;
+        cbae_cir_builder_init(&entry_builder, func, synthetic_entry);
+        cbae_cir_jump(&entry_builder, real_entry, cfg->entry_addr);
     }
 
     /* Pass 2: lift each block's instructions. */

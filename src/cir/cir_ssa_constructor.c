@@ -139,6 +139,23 @@ static cbae_cir_value_t *resolve_entry_value(ssa_ctx_t *ctx, cbae_reg_t reg,
 cbae_err_t cbae_cir_construct_ssa(cbae_cir_function_t *func) {
     if (!func) CBAE_RETURN_ERR(CBAE_ERR_INVALID, "null function");
 
+    /* Well-formedness precondition: the entry block (block 0) has no
+     * predecessors -- see cir_lifter.c for how the lifter guarantees it.
+     * Without it there is no block to carry the function-entry value of
+     * a live-in register into the entry block's phi, and the recursive
+     * lookup below chases the loop forever (stack overflow). Reject a
+     * producer that breaks the rule instead of crashing on it. */
+    if (cbae_vector_count(&func->blocks) > 0) {
+        cbae_cir_block_t **entry_bp = cbae_vector_at(&func->blocks, 0);
+        if (cbae_vector_count(&(*entry_bp)->predecessors) != 0)
+            CBAE_RETURN_ERR(CBAE_ERR_INVALID,
+                "function '%s': entry block0 has %u predecessor(s); CIR "
+                "requires an entry block with none (the lifter inserts a "
+                "synthetic entry block when machine code branches back to "
+                "the first instruction)",
+                func->name, (unsigned)cbae_vector_count(&(*entry_bp)->predecessors));
+    }
+
     ssa_ctx_t ctx;
     ctx.func = func;
     CBAE_CHECK(cbae_hashmap_init(&ctx.current_def, 32));

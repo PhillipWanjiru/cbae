@@ -15,6 +15,8 @@
  */
 #include "cir/cir_lifter.h"
 #include "cir/cir_ssa.h"
+#include "cir/cir_verifier.h"
+#include "cir/cir_builder.h"
 #include "cir/cir_printer.h"
 #include "disasm/cfg.h"
 #include "platform/logging.h"
@@ -252,6 +254,192 @@ static void t_loop_back_edge_phi(void) {
            "not self-referential\n");
 }
 
+/* Find the phi in `blk` whose incoming value from `pred_id` is the
+ * function parameter `reg`. NULL if none. */
+static cbae_cir_instruction_t *find_phi_with_param(const cbae_cir_block_t *blk,
+                                                    uint32_t pred_id, cbae_reg_t reg) {
+    for (uint32_t i = 0; i < blk->instruction_count; i++) {
+        cbae_cir_instruction_t *insn = blk->instructions[i];
+        if (insn->opcode != CIR_OP_PHI) continue;
+        for (uint32_t k = 0; k < insn->phi_incoming_count; k++) {
+            cbae_cir_value_t *v = insn->phi_incoming_values[k];
+            if (insn->phi_incoming_blocks[k] == pred_id &&
+                v->kind == CIR_VAL_PARAM && v->u.param_reg == reg)
+                return insn;
+        }
+    }
+    return NULL;
+}
+
+/* The incoming value a phi receives along the edge from `pred_id`. */
+static cbae_cir_value_t *phi_incoming_from(const cbae_cir_instruction_t *phi,
+                                            uint32_t pred_id) {
+    for (uint32_t k = 0; k < phi->phi_incoming_count; k++)
+        if (phi->phi_incoming_blocks[k] == pred_id) return phi->phi_incoming_values[k];
+    return NULL;
+}
+
+/* ── Test 4: the function's FIRST instruction is a branch target ─────────
+ *
+ *   0x2000: 48 FF C9     dec rcx          <- entry AND loop header
+ *   0x2003: 75 FB        jnz 0x2000       <- back edge to the entry
+ *   0x2005: C3           ret
+ *
+ * The entry block has a real predecessor (itself), so the function-entry
+ * value of rcx has to be MERGED with the loop's: rcx_in = phi(caller's
+ * rcx, dec's result). No machine-code block stands for "the caller", so
+ * the lifter inserts a SYNTHETIC entry block 0 that just jumps to the
+ * real entry (block 1). Hand-derived expected CIR:
+ *
+ *   block0: preds (none)           jump block1
+ *   block1: preds block0 block1    phi rcx [param rcx, block0] [dec, block1]
+ *                                  dec = sub phi, 1
+ *                                  branch ..., block1, block2
+ *   block2: preds block1           return
+ *
+ * Before the fix the SSA constructor recursed without end on this input
+ * (stack overflow) because the entry block's phi had nowhere to take the
+ * caller's value from. */
+static void t_entry_block_is_loop_header(void) {
+    uint8_t code[] = { 0x48,0xFF,0xC9, 0x75,0xFB, 0xC3 };
+    cbae_binary_image_t *img = make_code_image(code, sizeof(code), 0x2000);
+    cbae_disassembler_t *d;
+    cbae_disasm_create(CBAE_ARCH_X86_64, &d);
+    cbae_arena_t arena;
+    cbae_arena_init(&arena, 256 * 1024);
+
+    cbae_cfg_t cfg;
+    assert(cbae_cfg_build(img, d, 0x2000, &arena, &cfg) == CBAE_OK);
+    assert(cbae_cfg_block_count(&cfg) == 2);   /* machine-code blocks only */
+
+    cbae_cir_function_t *f;
+    assert(cbae_cir_lift_function(img, &cfg, NULL, &arena, "entry_loop", &f) == CBAE_OK);
+    assert(cbae_vector_count(&f->blocks) == 3);  /* + the synthetic entry */
+    assert(cbae_cir_construct_ssa(f) == CBAE_OK);
+
+    cbae_cir_block_t **bp0 = cbae_vector_at(&f->blocks, 0);
+    cbae_cir_block_t *synth = *bp0;
+    cbae_cir_block_t *head  = cbae_cir_function_block_at(f, 0x2000);
+    assert(head != NULL && head->id == 1);       /* lookup by address still finds the REAL entry */
+    assert(synth->id == 0);
+
+    /* Block 0 has no predecessors and does nothing but jump to the real entry. */
+    assert(cbae_vector_count(&synth->predecessors) == 0);
+    assert(synth->instruction_count == 1);
+    assert(synth->instructions[0]->opcode == CIR_OP_JUMP);
+    assert(synth->instructions[0]->branch_true_block == head->id);
+    assert(synth->successor_count == 1 && synth->successors[0] == head->id);
+
+    /* The real entry's predecessors: the synthetic block FIRST, then the back edge. */
+    assert(cbae_vector_count(&head->predecessors) == 2);
+    assert(*(uint32_t *)cbae_vector_at(&head->predecessors, 0) == 0);
+    assert(*(uint32_t *)cbae_vector_at(&head->predecessors, 1) == head->id);
+
+    /* rcx: phi [param rcx, block0], [dec's result, block1]; dec reads the phi. */
+    cbae_cir_instruction_t *rcx_phi = find_phi_with_param(head, 0, CBAE_REG_RCX);
+    assert(rcx_phi != NULL);
+    assert(rcx_phi->phi_incoming_count == 2);
+    cbae_cir_instruction_t *dec = NULL;
+    for (uint32_t i = 0; i < head->instruction_count; i++)
+        if (head->instructions[i]->opcode == CIR_OP_SUB) dec = head->instructions[i];
+    assert(dec != NULL);
+    assert(dec->operands[0] == rcx_phi->result);                 /* dec reads the merged rcx */
+    assert(phi_incoming_from(rcx_phi, head->id) == dec->result); /* back edge carries dec's result */
+    assert(phi_incoming_from(rcx_phi, head->id) != rcx_phi->result); /* NOT self-referential */
+
+    cbae_cir_verify_result_t vr = cbae_cir_verify_function(f);
+    if (!vr.ok) fprintf(stderr, "VERIFIER FAILED: %s\n", vr.message);
+    assert(vr.ok);
+
+    cbae_cir_function_destroy(f);
+    cbae_cfg_destroy(&cfg);
+    cbae_arena_destroy(&arena);
+    cbae_disasm_destroy(&d);
+    cbae_image_destroy(&img);
+    printf("  [PASS] entry block that is a loop header: synthetic entry carries "
+           "the caller's rcx into a real phi\n");
+}
+
+/* ── Test 5: back edge to the entry from a DIFFERENT block, with a
+ *           register that is read but never written in the loop ────────
+ *
+ *   0x2000: 48 83 FA 05   cmp rdx, 5       <- entry AND loop header
+ *   0x2004: 74 02         jz 0x2008
+ *   0x2006: EB F8         jmp 0x2000       <- back edge, from its own block
+ *   0x2008: C3            ret
+ *
+ * rdx is only ever READ, so inside the loop it is invariant. This is the
+ * sharper variant of the bug: with the entry's lone predecessor being a
+ * block that never writes rdx, the old constructor chased
+ * entry -> block -> entry -> ... forever. Expected: a loop-invariant phi
+ * for rdx at the real entry: [param rdx, block0], [itself, back-edge block]
+ * -- self-referential here is CORRECT (the value really is unchanged
+ * around the loop), unlike the induction-variable case in test 4. */
+static void t_entry_back_edge_invariant_register(void) {
+    uint8_t code[] = { 0x48,0x83,0xFA,0x05, 0x74,0x02, 0xEB,0xF8, 0xC3 };
+    cbae_binary_image_t *img = make_code_image(code, sizeof(code), 0x2000);
+    cbae_disassembler_t *d;
+    cbae_disasm_create(CBAE_ARCH_X86_64, &d);
+    cbae_arena_t arena;
+    cbae_arena_init(&arena, 256 * 1024);
+
+    cbae_cfg_t cfg;
+    assert(cbae_cfg_build(img, d, 0x2000, &arena, &cfg) == CBAE_OK);
+    assert(cbae_cfg_block_count(&cfg) == 3);
+
+    cbae_cir_function_t *f;
+    assert(cbae_cir_lift_function(img, &cfg, NULL, &arena, "entry_loop2", &f) == CBAE_OK);
+    assert(cbae_vector_count(&f->blocks) == 4);  /* 3 + synthetic entry */
+    assert(cbae_cir_construct_ssa(f) == CBAE_OK);
+
+    cbae_cir_block_t *head = cbae_cir_function_block_at(f, 0x2000);
+    cbae_cir_block_t *back = cbae_cir_function_block_at(f, 0x2006);
+    assert(head != NULL && back != NULL);
+    assert(head->id == 1);
+    assert(cbae_vector_count(&head->predecessors) == 2);
+
+    cbae_cir_instruction_t *rdx_phi = find_phi_with_param(head, 0, CBAE_REG_RDX);
+    assert(rdx_phi != NULL);
+    assert(phi_incoming_from(rdx_phi, back->id) == rdx_phi->result); /* invariant around the loop */
+
+    cbae_cir_instruction_t *cmp = NULL;
+    for (uint32_t i = 0; i < head->instruction_count; i++)
+        if (head->instructions[i]->opcode != CIR_OP_PHI) { cmp = head->instructions[i]; break; }
+    assert(cmp != NULL && cmp->operands[0] == rdx_phi->result);      /* cmp reads the merged rdx */
+
+    cbae_cir_verify_result_t vr = cbae_cir_verify_function(f);
+    if (!vr.ok) fprintf(stderr, "VERIFIER FAILED: %s\n", vr.message);
+    assert(vr.ok);
+
+    cbae_cir_function_destroy(f);
+    cbae_cfg_destroy(&cfg);
+    cbae_arena_destroy(&arena);
+    cbae_disasm_destroy(&d);
+    cbae_image_destroy(&img);
+    printf("  [PASS] back edge to entry from another block: loop-invariant rdx "
+           "gets [param, itself] phi, no infinite recursion\n");
+}
+
+/* ── Test 6: a CIR producer that breaks the entry rule gets an ERROR,
+ *           not a stack overflow ─────────────────────────────────────── */
+static void t_ssa_rejects_entry_with_predecessor(void) {
+    cbae_arena_t arena; cbae_arena_init(&arena, 64 * 1024);
+    cbae_cir_function_t *f;
+    assert(cbae_cir_function_create(&arena, 0x1000, "bad_entry", &f) == CBAE_OK);
+    cbae_cir_block_t *b0, *b1;
+    assert(cbae_cir_block_create(f, 0x1000, &b0) == CBAE_OK);
+    assert(cbae_cir_block_create(f, 0x1010, &b1) == CBAE_OK);
+    assert(cbae_cir_block_add_edge(b0, b1) == CBAE_OK);
+    assert(cbae_cir_block_add_edge(b1, b0) == CBAE_OK);   /* block 0 now has a predecessor */
+
+    assert(cbae_cir_construct_ssa(f) == CBAE_ERR_INVALID);
+
+    cbae_cir_function_destroy(f);
+    cbae_arena_destroy(&arena);
+    printf("  [PASS] SSA construction rejects an entry block with predecessors "
+           "(error, not a crash)\n");
+}
+
 int main(void) {
     printf("=== test_ssa_construction ===\n");
     cbae_log_init(CBAE_LOG_WARN, NULL, 0);
@@ -259,6 +447,9 @@ int main(void) {
     t_straight_line_no_phi();
     t_diamond_real_phi();
     t_loop_back_edge_phi();
+    t_entry_block_is_loop_header();
+    t_entry_back_edge_invariant_register();
+    t_ssa_rejects_entry_with_predecessor();
 
     printf("All SSA construction tests passed.\n");
     return 0;
