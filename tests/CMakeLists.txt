@@ -3,6 +3,11 @@ cmake_minimum_required(VERSION 3.20)
 function(cbae_add_test name src)
     add_executable(${name} ${CMAKE_CURRENT_SOURCE_DIR}/${src})
     target_include_directories(${name} PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    # Tests are written with assert(), some wrapping calls that must run.
+    # Release adds -DNDEBUG globally, which would delete those calls;
+    # -UNDEBUG (applied last) keeps every test assertion live in all
+    # build types. Library code is unaffected.
+    target_compile_options(${name} PRIVATE -UNDEBUG)
     target_link_libraries(${name} PRIVATE cbae_engine ${ARGN})
     add_test(NAME ${name} COMMAND ${name})
     set_tests_properties(${name} PROPERTIES TIMEOUT 30)
@@ -33,3 +38,4 @@ cbae_add_test(test_disasm_to_cir     unit/test_disasm_to_cir.c     cbae_cir cbae
 
 # ── Phase 5 — Dataflow Infrastructure ─────────────────────────────────────
 cbae_add_test(test_dominator_tree    unit/test_dominator_tree.c    cbae_dataflow cbae_cir cbae_disasm cbae_loader)
+cbae_add_test(test_dataflow_engine   unit/test_dataflow_engine.c   cbae_dataflow cbae_cir cbae_disasm cbae_loader)
