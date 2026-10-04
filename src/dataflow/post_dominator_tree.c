@@ -8,9 +8,9 @@
  *   2. Real exits are blocks with no successors. Mark every block that
  *      can reach one (reverse DFS).
  *   3. Blocks that cannot reach an exit lie in infinite regions. Find the
- *      SINK strongly connected components among them (iterative Tarjan)
- *      and link one member of each to the virtual exit, so every block
- *      has a path to it. See post_dominator_tree.h for the reasoning.
+ *      SINK strongly connected components among them (graph_scc.c) and
+ *      link one member of each to the virtual exit, so every block has a
+ *      path to it. See post_dominator_tree.h for the reasoning.
  *   4. Reverse every edge, add virtual-exit -> exit-block edges, and hand
  *      the result to dom_core_compute() with the virtual exit as root.
  *
@@ -19,6 +19,7 @@
  */
 #include "dataflow/post_dominator_tree.h"
 #include "dom_core.h"
+#include "graph_scc.h"
 #include "platform/logging.h"
 #include <stdlib.h>
 #include <string.h>
@@ -50,100 +51,48 @@ static cbae_err_t mark_reaching_exit(uint32_t n, const dom_csr_t *fwd,
 
 /* ── Step 3: sink SCCs of the part of the CFG that cannot exit ───────────
  *
- * Tarjan's algorithm, iterative, restricted to blocks with
- * reaches[b] == false. That set is closed under successors (a block with
- * a successor that reaches an exit would itself reach an exit), so the
- * traversal never leaves it. A component is a SINK when no edge leaves
- * it. For every sink, link its highest-numbered block to the virtual
- * exit by setting link_to_exit[rep] = true. */
-
-#define UNVISITED UINT32_MAX
-
-typedef struct { uint32_t node; uint32_t next_edge; } tarjan_frame_t;
+ * The strongly connected components (graph_scc.c) of the blocks with
+ * reaches[b] == false. That set is closed under successors -- a block with
+ * a successor that reaches an exit would itself reach an exit -- so no edge
+ * leaves it. A component is a SINK when no edge leads from it to a
+ * different component. For every sink, link its highest-numbered block to
+ * the virtual exit by setting link_to_exit[rep] = true. */
 
 static cbae_err_t link_sink_sccs(uint32_t n, const dom_csr_t *fwd,
                                  const bool *reaches, bool *link_to_exit) {
-    uint32_t *index     = malloc(sizeof(uint32_t) * n);
-    uint32_t *low       = malloc(sizeof(uint32_t) * n);
-    uint32_t *comp      = malloc(sizeof(uint32_t) * n);
-    uint32_t *comp_rep  = malloc(sizeof(uint32_t) * n);   /* highest id per comp */
-    uint32_t *scc_stack = malloc(sizeof(uint32_t) * n);
-    tarjan_frame_t *frames = malloc(sizeof(tarjan_frame_t) * n);
-    bool *on_stack     = calloc(n, sizeof(bool));
-    bool *comp_has_out = calloc(n, sizeof(bool));
-    if (!index || !low || !comp || !comp_rep || !scc_stack || !frames ||
-        !on_stack || !comp_has_out) {
-        free(index); free(low); free(comp); free(comp_rep); free(scc_stack);
-        free(frames); free(on_stack); free(comp_has_out);
+    bool     *active = malloc(sizeof(bool) * n);
+    uint32_t *comp   = malloc(sizeof(uint32_t) * n);
+    if (!active || !comp) {
+        free(active); free(comp);
         CBAE_RETURN_ERR(CBAE_ERR_OOM, "post-dominator tree: SCC scratch alloc failed");
     }
-    for (uint32_t i = 0; i < n; i++) index[i] = UNVISITED;
+    for (uint32_t b = 0; b < n; b++) active[b] = !reaches[b];
 
-    uint32_t counter = 0, ncomp = 0, ssp = 0;
+    uint32_t ncomp = 0;
+    cbae_err_t rc = graph_scc_compute(n, fwd->succ_off, fwd->succ_adj, active,
+                                      comp, &ncomp);
+    if (rc != CBAE_OK) { free(active); free(comp); return rc; }
 
-    for (uint32_t r = 0; r < n; r++) {
-        if (reaches[r] || index[r] != UNVISITED) continue;
-
-        uint32_t sp = 0;
-        frames[sp].node = r;
-        frames[sp].next_edge = fwd->succ_off[r];
-        sp++;
-        index[r] = low[r] = counter++;
-        scc_stack[ssp++] = r;
-        on_stack[r] = true;
-
-        while (sp > 0) {
-            tarjan_frame_t *top = &frames[sp - 1];
-            uint32_t v = top->node;
-
-            if (top->next_edge < fwd->succ_off[v + 1]) {
-                uint32_t w = fwd->succ_adj[top->next_edge++];
-                if (reaches[w]) continue;           /* cannot happen; see above */
-                if (index[w] == UNVISITED) {
-                    index[w] = low[w] = counter++;
-                    scc_stack[ssp++] = w;
-                    on_stack[w] = true;
-                    frames[sp].node = w;
-                    frames[sp].next_edge = fwd->succ_off[w];
-                    sp++;
-                } else if (on_stack[w] && index[w] < low[v]) {
-                    low[v] = index[w];
-                }
-            } else {
-                if (low[v] == index[v]) {           /* v roots a component */
-                    uint32_t cid = ncomp++;
-                    uint32_t max_id = 0, w;
-                    do {
-                        w = scc_stack[--ssp];
-                        on_stack[w] = false;
-                        comp[w] = cid;
-                        if (w > max_id) max_id = w;
-                    } while (w != v);
-                    comp_rep[cid] = max_id;
-                }
-                sp--;
-                if (sp > 0) {
-                    uint32_t parent = frames[sp - 1].node;
-                    if (low[v] < low[parent]) low[parent] = low[v];
-                }
-            }
-        }
+    uint32_t *rep     = calloc(ncomp ? ncomp : 1, sizeof(uint32_t));  /* highest id per comp */
+    bool     *has_out = calloc(ncomp ? ncomp : 1, sizeof(bool));
+    if (!rep || !has_out) {
+        free(active); free(comp); free(rep); free(has_out);
+        CBAE_RETURN_ERR(CBAE_ERR_OOM, "post-dominator tree: SCC scratch alloc failed");
     }
 
-    /* A component is a sink if no edge leaves it. */
     for (uint32_t u = 0; u < n; u++) {
-        if (reaches[u]) continue;
+        if (!active[u]) continue;
+        if (u > rep[comp[u]]) rep[comp[u]] = u;
         for (uint32_t e = fwd->succ_off[u]; e < fwd->succ_off[u + 1]; e++) {
-            uint32_t w = fwd->succ_adj[e];
-            if (!reaches[w] && comp[w] != comp[u]) comp_has_out[comp[u]] = true;
+            const uint32_t w = fwd->succ_adj[e];
+            if (active[w] && comp[w] != comp[u]) has_out[comp[u]] = true;
         }
     }
     for (uint32_t c = 0; c < ncomp; c++) {
-        if (!comp_has_out[c]) link_to_exit[comp_rep[c]] = true;
+        if (!has_out[c]) link_to_exit[rep[c]] = true;
     }
 
-    free(index); free(low); free(comp); free(comp_rep); free(scc_stack);
-    free(frames); free(on_stack); free(comp_has_out);
+    free(active); free(comp); free(rep); free(has_out);
     return CBAE_OK;
 }
 

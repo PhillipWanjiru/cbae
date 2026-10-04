@@ -41,3 +41,6 @@ cbae_add_test(test_dominator_tree    unit/test_dominator_tree.c    cbae_dataflow
 cbae_add_test(test_post_dominator_tree unit/test_post_dominator_tree.c cbae_dataflow cbae_cir cbae_disasm cbae_loader)
 cbae_add_test(test_dataflow_engine   unit/test_dataflow_engine.c   cbae_dataflow cbae_cir cbae_disasm cbae_loader)
 cbae_add_test(test_use_def           unit/test_use_def.c           cbae_dataflow cbae_cir cbae_disasm cbae_loader)
+cbae_add_test(test_graph_scc         unit/test_graph_scc.c         cbae_dataflow cbae_cir cbae_disasm cbae_loader)
+# graph_scc / dom_core are internal headers; this test exercises them directly.
+target_include_directories(test_graph_scc PRIVATE ${CMAKE_SOURCE_DIR}/src/dataflow)
