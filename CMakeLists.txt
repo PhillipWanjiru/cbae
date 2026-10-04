@@ -134,6 +134,7 @@ add_library(cbae_dataflow STATIC
     src/dataflow/dominator_tree.c
     src/dataflow/post_dominator_tree.c
     src/dataflow/dataflow_engine.c
+    src/dataflow/use_def.c
 )
 target_link_libraries(cbae_dataflow PUBLIC cbae_cir cbae_platform)
 
