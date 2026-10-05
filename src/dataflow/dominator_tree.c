@@ -7,6 +7,7 @@
  */
 #include "dataflow/dominator_tree.h"
 #include "dom_core.h"
+#include "cfg_graph.h"
 #include "platform/logging.h"
 #include <stdlib.h>
 #include <string.h>
@@ -33,38 +34,14 @@ cbae_err_t cbae_dom_tree_build(const cbae_cir_function_t *func,
         !out->dt_enter || !out->dt_exit || !out->children)
         CBAE_RETURN_ERR(CBAE_ERR_OOM, "dominator tree: array alloc failed");
 
-    /* The CFG as an edge list. Entry is always block 0, per the
-     * id==index invariant every CIR block creation upholds. */
-    uint32_t nedges = 0;
-    for (uint32_t b = 0; b < nblocks; b++) {
-        const cbae_cir_block_t *blk = *(cbae_cir_block_t **)cbae_vector_at(&func->blocks, b);
-        nedges += blk->successor_count;
-    }
-    uint32_t *ef = malloc(sizeof(uint32_t) * (nedges ? nedges : 1));
-    uint32_t *et = malloc(sizeof(uint32_t) * (nedges ? nedges : 1));
-    if (!ef || !et) {
-        free(ef); free(et);
-        CBAE_RETURN_ERR(CBAE_ERR_OOM, "dominator tree: edge list alloc failed");
-    }
-    uint32_t ei = 0;
-    for (uint32_t b = 0; b < nblocks; b++) {
-        const cbae_cir_block_t *blk = *(cbae_cir_block_t **)cbae_vector_at(&func->blocks, b);
-        for (uint32_t k = 0; k < blk->successor_count; k++) {
-            ef[ei] = b;
-            et[ei] = blk->successors[k];
-            ei++;
-        }
-    }
-
+    /* The CFG as CSR adjacency. Entry is always block 0, per the id==index
+     * invariant every CIR block creation upholds. */
     dom_csr_t csr;
-    cbae_err_t rc = dom_csr_build(nblocks, ef, et, nedges, &csr);
-    free(ef);
-    free(et);
-    CBAE_CHECK(rc);
+    CBAE_CHECK(cfg_csr_build(func, &csr));
 
     dom_graph_t g = { nblocks, 0, csr.succ_off, csr.succ_adj,
                       csr.pred_off, csr.pred_adj };
-    rc = dom_core_compute(&g, "dominator tree",
+    cbae_err_t rc = dom_core_compute(&g, "dominator tree",
                           out->idom, out->rpo_order, out->rpo_number);
     dom_csr_free(&csr);
     CBAE_CHECK(rc);

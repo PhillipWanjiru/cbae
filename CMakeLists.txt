@@ -130,12 +130,14 @@ target_link_libraries(cbae_cir PUBLIC cbae_platform cbae_disasm)
 # analysis, reaching stores, use-def chains, constant propagation.
 # Depends on cbae_cir (operates on lifted, SSA-form CIR functions).
 add_library(cbae_dataflow STATIC
+    src/dataflow/cfg_graph.c
     src/dataflow/graph_scc.c
     src/dataflow/dom_core.c
     src/dataflow/dominator_tree.c
     src/dataflow/post_dominator_tree.c
     src/dataflow/dataflow_engine.c
     src/dataflow/use_def.c
+    src/dataflow/alias_analysis.c
 )
 target_link_libraries(cbae_dataflow PUBLIC cbae_cir cbae_platform)
 
