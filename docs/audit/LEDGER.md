@@ -26,6 +26,11 @@ not only read.
 | A-012 | `cir_verifier.c` | Structural verifier does not check: block 0 has no predecessors; NULL operand slots; operand/result width agreement for binary ops. Dominance is not checked at all (the SSA verifier is a Phase 5 deliverable). | MED | Phase 5 (partly) |
 | A-013 | Arena sizing | Arenas have fixed capacity and return NULL when spent. Audit how the lifter and engine size a function's arena for large functions, and that exhaustion surfaces as an error everywhere, never as a crash (see A-009). | MED | open |
 | A-014 | `alias_analysis.c` | Precision gap, not a bug: a cluster of phis that refer only to each other and are invariant as a group, with no phi referring to itself (possible with irreducible control flow), stays unresolved (MAY). | LOW | documented |
+| A-015 | `alias_analysis.c` | Soundness bug in Phase 5 code: a narrow constant (i32 -1, an i16 70000 that does not fit its type) was folded as its int64 field. CIR does not define how a narrow value extends when it feeds a 64-bit operation. Found by `test_alias_soundness.c` on random function seed 4 (value defined 0x1170, form evaluated 0x11170). Fix: only 64-bit constants fold; a narrow constant is an opaque, stable atom. Regression test `t_narrow_constants`. | MED | fixed (Phase 5) |
+| A-016 | `alias_analysis.c`, `cir_ssa_constructor.c:112` | Soundness bug in Phase 5 code: a phi narrower than 64 bits was resolved to its incoming form although it truncates its incomings. Found by the random test (seed 11). Fix: only 64-bit phis resolve. Regression test `t_narrow_phi`. Related fact for the audit: the SSA constructor makes every phi i64 whatever the widths of its incoming values. | MED | fixed (Phase 5); constructor behaviour open |
+| A-017 | `alias_analysis.c` (root cause A-002) | Soundness bug in Phase 5 code: all narrow registers are one SSA value, `other`, so `ecx*4 - edx*4` cancelled to 0 and two different addresses were reported identical. Found by the random test (seed 16) after the generator learnt the lifter's conflation. Fix: an instruction that reads `other` is an atom (its result is one value per execution); a phi of `other` never resolves to it. Regression test `t_other_conflation`. Every later pass must treat `other` as unknown and never equal to itself. | HIGH | fixed in the analysis; root cause open (A-002) |
+| A-018 | Phase 4 lifter (`cir_lifter_memory.c`) | `push qword [rbx]` stores the ADDRESS rbx instead of the loaded value; `pop qword [rbx]` discards the value and stores nothing (only rsp changes). Same root as A-001: a MEM operand converts to its address. Verified on printed CIR. | HIGH | open |
+| A-019 | `cir_lifter_memory.c` header, `cir_opcodes.h` | The header says LEA lifts to `CIR_OP_LEA`; the lifter never emits it (LEA yields the bare address expression), so `CIR_OP_LEA` is unused. Check which other "syntactic" opcodes are never emitted (DIV, PUSH, POP, MMIO...) and remove or implement them. | LOW | open |
 
 ## Strengths to credit in the audit report
 
@@ -43,3 +48,7 @@ Noted as found, with the evidence, so the report names specifics.
   target kept block 0 predecessor-free, which every later analysis relies on.
 - Test discipline: hand-derived expectations, brute-force cross-checks on
   random graphs, Valgrind, and mutation testing that found real gaps.
+- The random-program soundness harness (`cir_random.h`: valid-SSA generator
+  plus a concrete interpreter) found three real soundness bugs (A-015..A-017)
+  that hand-written tests and 93 killed mutants had not, and will be reused to
+  test the lifter itself against Unicorn in Phase 4.5.

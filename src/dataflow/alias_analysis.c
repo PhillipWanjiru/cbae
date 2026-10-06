@@ -55,8 +55,22 @@ static void add_term(wform_t *f, const cbae_cir_value_t *v, uint64_t k) {
     f->n++;
 }
 
+/* The lifter's "other" register: every narrow register lifts to this one
+ * parameter, so one SSA value stands for several different run-time values.
+ * Two reads of it must never merge or cancel (ecx*4 - edx*4 is not 0). */
+static bool is_other_param(const cbae_cir_value_t *v) {
+    return v && v->kind == CIR_VAL_PARAM && v->u.param_reg == CBAE_REG_OTHER;
+}
+
+/* A constant the analysis may fold: a 64-bit one. How a narrower constant
+ * extends when it is used as a 64-bit operand is not defined by CIR (zero- or
+ * sign-extension, truncation of an out-of-range field), so it is not folded;
+ * see expand(), where it becomes an atom. */
 static bool const_of(const cbae_cir_value_t *v, int64_t *out) {
-    if (v && v->kind == CIR_VAL_CONST) { *out = v->u.const_val; return true; }
+    if (v && v->kind == CIR_VAL_CONST && cir_type_bits(v->type) == 64) {
+        *out = v->u.const_val;
+        return true;
+    }
     return false;
 }
 
@@ -68,7 +82,9 @@ static void expand(expander_t *x, const cbae_cir_value_t *v, uint64_t mult, uint
     if (mult == 0 || x->f.overflow) return;
 
     if (v->kind == CIR_VAL_CONST) {
-        x->f.off += mult * (uint64_t)v->u.const_val;
+        int64_t c;
+        if (const_of(v, &c)) x->f.off += mult * (uint64_t)c;
+        else                 add_term(&x->f, v, mult);   /* narrow constant: opaque but stable */
         return;
     }
     if (v->kind != CIR_VAL_INSN_RESULT || !v->u.def_insn ||
@@ -95,9 +111,13 @@ static void expand(expander_t *x, const cbae_cir_value_t *v, uint64_t mult, uint
     /* Narrower results wrap at their own width, not at 2^64. */
     if (cir_type_bits(v->type) != 64) { add_term(&x->f, v, mult); return; }
 
-    /* A missing operand (a malformed function) makes this instruction an atom. */
+    /* A missing operand (a malformed function) makes this instruction an atom.
+     * So does reading the conflated "other" register: each read may be a
+     * different register, so the reading instruction's RESULT (one value per
+     * execution, however often that result is used) is the atom, and terms
+     * from two separate reads can never meet. */
     for (uint32_t k = 0; k < in->operand_count; k++) {
-        if (!in->operands[k]) { add_term(&x->f, v, mult); return; }
+        if (!in->operands[k] || is_other_param(in->operands[k])) { add_term(&x->f, v, mult); return; }
     }
 
     int64_t c;
@@ -226,6 +246,12 @@ static bool form_mentions(const cbae_addr_info_t *f, const cbae_cir_value_t *v) 
     return false;
 }
 
+static bool form_has_other(const cbae_addr_info_t *f) {
+    for (uint32_t i = 0; i < f->term_count; i++)
+        if (is_other_param(f->terms[i].value)) return true;
+    return false;
+}
+
 /* Record phi == F whenever every incoming value other than the phi itself
  * has the same form F (and F does not mention the phi). Repeat until a pass
  * resolves nothing: resolving one phi can make another's incomings equal.
@@ -242,6 +268,10 @@ static void resolve_phis(cbae_alias_ctx_t *c) {
             const cbae_cir_instruction_t *phi = c->phi_insn[s];
             const cbae_cir_value_t *self = phi->result;
 
+            /* A narrower phi truncates what flows into it, so it is not equal
+             * to its incoming values and stays an atom. */
+            if (cir_type_bits(self->type) != 64) continue;
+
             cbae_addr_info_t cand, fx;
             memset(&cand, 0, sizeof cand);
             bool have = false, ok = true;
@@ -251,7 +281,9 @@ static void resolve_phis(cbae_alias_ctx_t *c) {
                 if (!have) { cand = fx; have = true; }
                 else if (cand.offset != fx.offset || !same_terms(&cand, &fx)) { ok = false; break; }
             }
-            if (ok && have && !form_mentions(&cand, self)) {
+            /* phi == F would put the conflated register into other forms,
+             * where it could meet another read of itself. */
+            if (ok && have && !form_mentions(&cand, self) && !form_has_other(&cand)) {
                 c->phi_form[s]     = cand;
                 c->phi_resolved[s] = true;
                 changed = true;
@@ -346,7 +378,7 @@ bool cbae_alias_value_is_stable(const cbae_alias_ctx_t *ctx, const cbae_cir_valu
         case CIR_VAL_PARAM:
             /* Every narrow register lifts to this one parameter, so it does
              * not denote a single run-time value. */
-            return v->u.param_reg != CBAE_REG_OTHER;
+            return !is_other_param(v);
         case CIR_VAL_INSN_RESULT: {
             const uint32_t b = cbae_use_def_block_of(ctx->ud, v->u.def_insn);
             return b != CBAE_USE_DEF_NO_BLOCK && b < ctx->block_count &&

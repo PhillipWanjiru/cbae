@@ -28,8 +28,11 @@
  *      constant. Arithmetic wraps at 64 bits exactly as address arithmetic
  *      does. An ATOM is a value that cannot be expanded further: a
  *      parameter, a load or call result, the result of any other opcode, an
- *      unresolved phi. Constants fold into the offset. Only 64-bit results
- *      are expanded; a narrower ADD wraps at its own width and is an atom.
+ *      unresolved phi. 64-bit constants fold into the offset. Only 64-bit
+ *      results are expanded; a narrower ADD wraps at its own width and is an
+ *      atom. A narrower CONSTANT is an atom too (opaque, but stable): how it
+ *      extends when it feeds a 64-bit operation is not defined by CIR, so it
+ *      is not folded as its int64 field.
  *
  *      The lifter emits [base + index*scale + disp] as
  *      ADD(ADD(base, MUL(index, scale)), disp) with a fresh MUL each time,
@@ -61,7 +64,9 @@
  *      chains resolve. This is valid in dominance-correct SSA: the first
  *      time the phi runs it must take F, and afterwards it takes F or its
  *      own earlier value, which is F. An incoming that is the phi plus a
- *      non-zero constant (an induction variable) keeps the phi an atom.
+ *      non-zero constant (an induction variable) keeps the phi an atom. Only
+ *      64-bit phis resolve: a narrower phi truncates what flows into it, so
+ *      it is not equal to its incoming values.
  *
  * WHAT IT DOES NOT DO
  *   - No assumptions about the program: a pointer parameter may point into
@@ -79,7 +84,10 @@
  *   inherit that looseness (every access is 64 bits; segment overrides are
  *   dropped). One protection is built in: narrow registers all lift to the
  *   single parameter "other", which stands for many different registers, so
- *   it is never treated as a stable value.
+ *   it is never treated as a stable value, and an instruction that reads it
+ *   is an atom: its RESULT is one value per execution however often that
+ *   result is used, whereas terms from two separate reads (ecx*4 - edx*4)
+ *   must never merge or cancel. A phi of it is never resolved to it.
  *
  * OWNERSHIP
  *   The context borrows the use-def index, which must outlive it. It owns

@@ -790,6 +790,82 @@ static void t_other_register(void) {
     printf("  [PASS] the lifter's 'other' register is never a stable value\n");
 }
 
+static void t_other_conflation(void) {
+    /* "other" is ONE parameter standing for every narrow register, so two
+     * reads of it are unrelated numbers: ecx*4 - edx*4 is not zero. That was a
+     * soundness bug: terms from two separate reads merged and cancelled, and
+     * two different addresses were reported identical (found by
+     * test_alias_soundness.c). An instruction that reads "other" is now an
+     * atom: its RESULT is one value however often that result is used.
+     *
+     *   b0: m1 = other*4 ; m2 = other*4 ; d = m1 - m2 ; a = p + d
+     *       d0 = m1 - m1 ; a0 = p + d0 ; s = m1 + 8 ; branch b1, b2
+     *   b3: P1 = phi(other, other) ; P2 = phi(other, other)
+     *       w = P1 - P2 ; aw = p + w ; q = P1 + 8                          */
+    fn_t x; fn_init(&x, "other_conflation");
+    cbae_cir_block_t *b1 = fn_block(&x, 0x1010), *b2 = fn_block(&x, 0x1020), *b3 = fn_block(&x, 0x1030);
+    cbae_cir_builder_t *b = &x.bld;
+    cbae_cir_value_t *p  = cbae_cir_param(b, CBAE_REG_RBX);
+    cbae_cir_value_t *o  = cbae_cir_param(b, CBAE_REG_OTHER);
+    cbae_cir_value_t *c4 = k_const(b, 4), *c8 = k_const(b, 8), *cc = cbae_cir_const(b, cir_type_i1(), 1);
+    cbae_cir_value_t *m1 = k_mul(b, o, c4);
+    cbae_cir_value_t *m2 = k_mul(b, o, c4);
+    cbae_cir_value_t *d  = k_sub(b, m1, m2);
+    cbae_cir_value_t *a  = k_add(b, p, d);
+    cbae_cir_value_t *d0 = k_sub(b, m1, m1);
+    cbae_cir_value_t *a0 = k_add(b, p, d0);
+    cbae_cir_value_t *s  = k_add(b, m1, c8);
+    cbae_cir_value_t *r1 = k_add(b, p, o);            /* "other" as the SECOND operand: [rbx+ecx]  */
+    cbae_cir_value_t *r2 = k_add(b, p, o);
+    cbae_cir_value_t *dd = k_sub(b, r1, r2);
+    cbae_cir_value_t *ad = k_add(b, p, dd);
+    cbae_cir_branch(b, cc, b1, b2, 0);
+    cbae_cir_builder_init(b, x.f, b1);
+    cbae_cir_jump(b, b3, 0);
+    cbae_cir_builder_init(b, x.f, b2);
+    cbae_cir_jump(b, b3, 0);
+
+    cbae_cir_value_t *P1 = cbae_cir_phi_create(x.f, b3, T64);
+    cbae_cir_value_t *P2 = cbae_cir_phi_create(x.f, b3, T64);
+    cbae_cir_builder_init(b, x.f, b3);
+    cbae_cir_value_t *w  = k_sub(b, P1, P2);
+    cbae_cir_value_t *aw = k_add(b, p, w);
+    cbae_cir_value_t *q  = k_add(b, P1, c8);
+    cbae_cir_return(b, p, 0);
+    assert(cbae_cir_phi_add_incoming(x.f, P1->u.def_insn, o, b1->id) == CBAE_OK);
+    assert(cbae_cir_phi_add_incoming(x.f, P1->u.def_insn, o, b2->id) == CBAE_OK);
+    assert(cbae_cir_phi_add_incoming(x.f, P2->u.def_insn, o, b1->id) == CBAE_OK);
+    assert(cbae_cir_phi_add_incoming(x.f, P2->u.def_insn, o, b2->id) == CBAE_OK);
+    an_t an; an_build(&an, x.f);
+
+    cbae_addr_info_t info;
+    assert(cbae_alias_decompose(&an.ctx, m1, &info) && is_atom(&info, m1));
+    assert(cbae_alias_value_is_stable(&an.ctx, m1));          /* one execution, one value */
+    assert(cbae_alias_decompose(&an.ctx, a, &info) && info.offset == 0 && info.term_count == 3);
+    int pos = 0, neg = 0;
+    for (uint32_t k = 0; k < info.term_count; k++) {
+        if (info.terms[k].value == p  && info.terms[k].coeff ==  1) pos++;
+        if (info.terms[k].value == m1 && info.terms[k].coeff ==  1) pos++;
+        if (info.terms[k].value == m2 && info.terms[k].coeff == -1) neg++;
+    }
+    assert(pos == 2 && neg == 1);
+    assert(cbae_alias_decompose(&an.ctx, P1, &info) && is_atom(&info, P1));   /* not {other} */
+    assert(cbae_alias_decompose(&an.ctx, P2, &info) && is_atom(&info, P2));
+
+    expect(&an, "p + (m1 - m2), two reads of other, vs p",   a,  8, p,  8, MAY);
+    expect(&an, "p + (m1 - m1), one value used twice, vs p", a0, 8, p,  8, MUST);
+    expect(&an, "m1+8 vs m1: one stable value, so adjacent", s,  8, m1, 8, NO);
+    expect(&an, "p + ((p+other) - (p+other)), other second operand, vs p", ad, 8, p, 8, MAY);
+    assert(cbae_alias_decompose(&an.ctx, r1, &info) && is_atom(&info, r1));
+    expect(&an, "p + (P1 - P2), two phis of other, vs p",    aw, 8, p,  8, MAY);
+    expect(&an, "P1+8 vs P1",                                q,  8, P1, 8, NO);
+    expect(&an, "the other register itself",                 o,  8, o,  8, MAY);
+
+    an_free(&an);
+    fn_done(&x);
+    printf("  [PASS] reads of 'other' never merge: ecx*4-edx*4 is not 0, phi(other,other) is not {other}\n");
+}
+
 /* ── Limits, cancellation, narrow types, odd opcodes ─────────────────── */
 
 static void t_expansion_limits(void) {
@@ -935,6 +1011,106 @@ static void t_narrow_arithmetic(void) {
     an_free(&an);
     fn_done(&x);
     printf("  [PASS] narrow arithmetic: i32 adds are atoms, not 64-bit forms\n");
+}
+
+static void t_narrow_constants(void) {
+    /* How a narrow constant extends when it feeds a 64-bit operation is not
+     * defined by CIR: i32 -1 might be 0xFFFFFFFF or 0xFFFF...FFFF, and 70000
+     * does not even fit an i16. Folding it as its int64 field was a soundness
+     * bug (found by test_alias_soundness.c: i16 70000 evaluates to 0x1170).
+     * A narrow constant is therefore an opaque, stable atom. */
+    fn_t x; fn_init(&x, "narrow_const");
+    cbae_cir_builder_t *b = &x.bld;
+    cbae_cir_value_t *p    = cbae_cir_param(b, CBAE_REG_RBX);
+    cbae_cir_value_t *cm1  = k_const(b, -1);
+    cbae_cir_value_t *n32  = cbae_cir_const(b, cir_type_i(32), -1);
+    cbae_cir_value_t *n32b = cbae_cir_const(b, cir_type_i(32), -1);
+    cbae_cir_value_t *big  = cbae_cir_const(b, cir_type_i(16), 70000);
+    cbae_cir_value_t *k3   = cbae_cir_const(b, cir_type_i(16), 3);
+    cbae_cir_value_t *a    = k_add(b, p, cm1);       /* p - 1                         */
+    cbae_cir_value_t *b1   = k_add(b, p, n32);       /* p + <i32 constant>            */
+    cbae_cir_value_t *b2   = k_add(b, p, n32);       /* another SSA value, same form  */
+    cbae_cir_value_t *c    = k_add(b, p, n32b);      /* p + <a different i32 constant> */
+    cbae_cir_value_t *d    = k_add(b, p, big);
+    cbae_cir_value_t *m    = k_mul(b, p, n32);       /* narrow multiplier: not folded */
+    cbae_cir_value_t *sh   = k_shl(b, p, k3);        /* narrow shift count: not folded */
+    cbae_cir_return(b, p, 0);
+    an_t an; an_build(&an, x.f);
+
+    cbae_addr_info_t info;
+    assert(cbae_alias_decompose(&an.ctx, n32, &info) && is_atom(&info, n32));
+    assert(cbae_alias_value_is_stable(&an.ctx, n32));
+    assert(cbae_alias_decompose(&an.ctx, big, &info) && is_atom(&info, big));
+    assert(cbae_alias_decompose(&an.ctx, cm1, &info) && info.offset == -1 && info.term_count == 0);
+    assert(cbae_alias_decompose(&an.ctx, b1, &info) && info.offset == 0 && info.term_count == 2);
+    assert((info.terms[0].value == p && info.terms[1].value == n32) ||
+           (info.terms[1].value == p && info.terms[0].value == n32));
+    assert(info.terms[0].coeff == 1 && info.terms[1].coeff == 1);
+    assert(cbae_alias_decompose(&an.ctx, m,  &info) && is_atom(&info, m));
+    assert(cbae_alias_decompose(&an.ctx, sh, &info) && is_atom(&info, sh));
+
+    expect(&an, "p-1 vs p+<i32 -1>: not the same address",      a,  8, b1, 8, MAY);
+    expect(&an, "p+<i32 -1> vs itself rebuilt (same atom)",     b1, 8, b2, 8, MUST);
+    expect(&an, "p+<i32 -1> vs p+<another i32 -1>",             b1, 8, c,  8, MAY);
+    expect(&an, "p+<i32 -1> vs p+<i16 70000>",                  b1, 8, d,  8, MAY);
+    expect(&an, "p*<i32 constant> vs p",                        m,  8, p,  8, MAY);
+
+    an_free(&an);
+    fn_done(&x);
+    printf("  [PASS] narrow constants are opaque atoms, never folded as 64-bit values\n");
+}
+
+static void t_narrow_phi(void) {
+    /*   b0: p = param ; v = p + 8 ; branch b1, b2
+     *   b1: jump b3
+     *   b2: jump b3
+     *   b3: W  = phi i64 [v, b1] [v, b2]       == v
+     *       N  = phi i32 [v, b1] [v, b2]       == v truncated to 32 bits, NOT v
+     *       WK = phi i64 [n32, b1] [n32, b2]   == the (opaque) i32 constant
+     * A phi narrower than 64 bits truncates what flows in, so resolving it to
+     * the incoming form was a soundness bug (found by test_alias_soundness.c,
+     * which defines a 64-bit value from an i8 phi). */
+    fn_t x; fn_init(&x, "narrow_phi");
+    cbae_cir_block_t *b1 = fn_block(&x, 0x1010), *b2 = fn_block(&x, 0x1020), *b3 = fn_block(&x, 0x1030);
+    cbae_cir_builder_t *b = &x.bld;
+    cbae_cir_value_t *p   = cbae_cir_param(b, CBAE_REG_RBX);
+    cbae_cir_value_t *c8  = k_const(b, 8), *cc = cbae_cir_const(b, cir_type_i1(), 1);
+    cbae_cir_value_t *n32 = cbae_cir_const(b, cir_type_i(32), -1);
+    cbae_cir_value_t *v   = k_add(b, p, c8);
+    cbae_cir_branch(b, cc, b1, b2, 0);
+    cbae_cir_builder_init(b, x.f, b1);
+    cbae_cir_jump(b, b3, 0);
+    cbae_cir_builder_init(b, x.f, b2);
+    cbae_cir_jump(b, b3, 0);
+
+    cbae_cir_value_t *W  = cbae_cir_phi_create(x.f, b3, T64);
+    cbae_cir_value_t *N  = cbae_cir_phi_create(x.f, b3, cir_type_i(32));
+    cbae_cir_value_t *WK = cbae_cir_phi_create(x.f, b3, T64);
+    cbae_cir_builder_init(b, x.f, b3);
+    cbae_cir_return(b, p, 0);
+    assert(cbae_cir_phi_add_incoming(x.f, W->u.def_insn,  v,   b1->id) == CBAE_OK);
+    assert(cbae_cir_phi_add_incoming(x.f, W->u.def_insn,  v,   b2->id) == CBAE_OK);
+    assert(cbae_cir_phi_add_incoming(x.f, N->u.def_insn,  v,   b1->id) == CBAE_OK);
+    assert(cbae_cir_phi_add_incoming(x.f, N->u.def_insn,  v,   b2->id) == CBAE_OK);
+    assert(cbae_cir_phi_add_incoming(x.f, WK->u.def_insn, n32, b1->id) == CBAE_OK);
+    assert(cbae_cir_phi_add_incoming(x.f, WK->u.def_insn, n32, b2->id) == CBAE_OK);
+    an_t an; an_build(&an, x.f);
+
+    cbae_addr_info_t info;
+    assert(cbae_alias_decompose(&an.ctx, W, &info) && info.offset == 8 &&
+           info.term_count == 1 && info.terms[0].value == p && info.terms[0].coeff == 1);
+    assert(cbae_alias_decompose(&an.ctx, N, &info) && is_atom(&info, N));
+    assert(cbae_alias_decompose(&an.ctx, WK, &info) && is_atom(&info, n32));
+
+    expect(&an, "i64 phi of v is v",                   W, 8, v, 8, MUST);
+    expect(&an, "i64 phi of v is p+8: adjacent to p",  W, 8, p, 8, NO);
+    expect(&an, "i32 phi of v is not v",               N, 8, v, 8, MAY);
+    expect(&an, "i32 phi vs the i64 phi",              N, 8, W, 8, MAY);
+    expect(&an, "i64 phi of an i32 constant is that constant", WK, 8, n32, 8, MUST);
+
+    an_free(&an);
+    fn_done(&x);
+    printf("  [PASS] narrow phis are atoms; i64 phis over narrow constants resolve to the constant\n");
 }
 
 static void t_copy_and_shifts(void) {
@@ -1349,14 +1525,19 @@ static void t_lifted_narrow_register_conflation(void) {
     assert(cbae_alias_mem_access(l0, &addr, &size));
     cbae_addr_info_t info;
     assert(cbae_alias_decompose(&an.ctx, addr, &info));
-    bool has_other = false;
-    for (uint32_t k = 0; k < info.term_count; k++)
-        if (info.terms[k].value->kind == CIR_VAL_PARAM &&
-            info.terms[k].value->u.param_reg == CBAE_REG_OTHER) has_other = true;
-    assert(has_other);                      /* the index really is the "other" param */
+    bool reads_other = false;       /* a term is the result of an instruction reading "other" */
+    for (uint32_t k = 0; k < info.term_count; k++) {
+        const cbae_cir_value_t *t = info.terms[k].value;
+        if (t->kind == CIR_VAL_INSN_RESULT && t->u.def_insn->operand_count >= 1 &&
+            t->u.def_insn->operands[0]->kind == CIR_VAL_PARAM &&
+            t->u.def_insn->operands[0]->u.param_reg == CBAE_REG_OTHER) reads_other = true;
+    }
+    assert(reads_other);                    /* the index really is the "other" param */
 
+    /* Two different reads of "other": never the same address. One load against
+     * itself is one address value in a block that runs once: MUST is right. */
     assert(lifted_query(&an, &L, CIR_OP_LOAD, 0, CIR_OP_LOAD, 1) == MAY);
-    assert(lifted_query(&an, &L, CIR_OP_LOAD, 0, CIR_OP_LOAD, 0) == MAY);
+    assert(lifted_query(&an, &L, CIR_OP_LOAD, 0, CIR_OP_LOAD, 0) == MUST);
 
     an_free(&an);
     lifted_destroy(&L);
@@ -1378,6 +1559,8 @@ int main(void) {
     t_cancellation();
     t_work_cap_is_sticky();
     t_narrow_arithmetic();
+    t_narrow_constants();
+    t_narrow_phi();
     t_copy_and_shifts();
     t_malformed_operand();
     t_loop_unstable_vs_stable();
@@ -1391,6 +1574,7 @@ int main(void) {
     t_phi_pass_cap();
     t_phi_chain_depth();
     t_other_register();
+    t_other_conflation();
     t_api_edges();
     t_lifted_loop_invariant_base();
     t_lifted_stack_frame();
