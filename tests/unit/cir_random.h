@@ -32,6 +32,10 @@
  *     PTR or i64 arithmetic. Address "recipes" are reused, with the same or
  *     a different displacement, so that distinct SSA values with identical
  *     decompositions occur (the case alias analysis exists for).
+ *   - Optional knobs, off by default so existing seeds keep their functions:
+ *     barrier_pct makes calls (CALL and API_CALL, which overwrite memory) dense;
+ *     reload_pct makes loads read back what recent stores wrote, through a
+ *     rebuilt address, and puts a reload straight after some stores.
  *   - Sums of up to eleven operands (more atoms than the analysis keeps) and
  *     loop-header phis carrying every kind of recurrence (x+c, x*k, x<<c, -x,
  *     x+y, x+x, copies), so that both the term caps and the redundant-phi
@@ -67,7 +71,8 @@
  *   - Using a value before its definition aborts: the generator is
  *     supposed to make that impossible.
  *   Hooks report each definition, each memory access, each load's
- *   per-byte last writer, and each byte a call clobbers.
+ *   per-byte last writer, each byte a call clobbers, and, before every
+ *   non-phi instruction, which instructions are the last writer of some byte.
  */
 #ifndef CBAE_TEST_CIR_RANDOM_H
 #define CBAE_TEST_CIR_RANDOM_H
@@ -131,6 +136,15 @@ typedef struct cirg_params {
     uint32_t min_blocks, max_blocks;   /* function size, at least 2                  */
     uint32_t max_body;                  /* random instructions per block, 1..max_body */
     uint32_t extra_edge_pct;            /* chance of keeping each extra edge attempt  */
+    uint32_t barrier_pct;               /* 0 (default): the usual mix. Otherwise each
+                                         * instruction is, with this chance, a CALL or an
+                                         * API_CALL, both of which overwrite memory       */
+    uint32_t reload_pct;                /* 0 (default): the usual mix. Otherwise a LOAD
+                                         * reads, with this chance, the address of one of
+                                         * the last few STOREs (rebuilt, so a new SSA value
+                                         * with the same decomposition), and a STORE is
+                                         * followed at once by a reload with a third of it:
+                                         * the spill/reload shape real code is full of    */
 } cirg_params_t;
 
 /* One address expression, remembered so it can be built again. */
@@ -181,6 +195,11 @@ typedef struct cirg {
     cbae_cir_value_t     *induct_in[CIRG_MAX_BLOCKS][CIRG_MAX_PHIS][CIRG_MAX_BLOCKS];
     uint32_t              nphi[CIRG_MAX_BLOCKS];
 
+    uint32_t              barrier_pct;
+    uint32_t              reload_pct;
+    cirg_recipe_t         stored[4];                  /* the last few STOREs' addresses, newest at nstored-1 */
+    uint8_t               stored_cls[4];              /* and the class of the value each stored            */
+    uint32_t              nstored;
     cirr_rng_t            rng;
     cbae_cir_builder_t    bld;
 } cirg_t;
@@ -353,8 +372,9 @@ static cbae_cir_value_t *cirg_emit_address(cirg_t *g, uint32_t b, const cirg_rec
 }
 
 /* An address for a memory access (or an address value to leave lying
- * around): a reused recipe about 40% of the time. */
-static cbae_cir_value_t *cirg_address(cirg_t *g, uint32_t b) {
+ * around): a reused recipe about 40% of the time. `used`, if given, receives
+ * the recipe the address was built from. */
+static cbae_cir_value_t *cirg_address_rc(cirg_t *g, uint32_t b, cirg_recipe_t *used) {
     cirr_rng_t *rng = &g->rng;
     cirg_recipe_t rc;
     bool reuse = false;
@@ -390,8 +410,11 @@ static cbae_cir_value_t *cirg_address(cirg_t *g, uint32_t b) {
         rc.blk   = b;
         if (g->nrecipes < CIRG_MAX_RECIPES) g->recipes[g->nrecipes++] = rc;
     }
+    if (used) *used = rc;
     return cirg_emit_address(g, b, &rc);
 }
+
+static cbae_cir_value_t *cirg_address(cirg_t *g, uint32_t b) { return cirg_address_rc(g, b, NULL); }
 
 static cirg_class_t cirg_data_class(cirg_t *g) {
     const uint32_t r = cirr_below(&g->rng, 100);
@@ -446,8 +469,23 @@ static bool cirg_emit_cancel_pair(cirg_t *g, uint32_t b) {
 
 static void cirg_emit_random(cirg_t *g, uint32_t b) {
     cirr_rng_t *rng = &g->rng;
-    const uint32_t r = cirr_below(rng, 100);
     const cbae_cir_type_t t64 = cir_type_i(64);
+
+    /* Optional extra density of memory-clobbering instructions. Skipped (and no
+     * random number drawn) when barrier_pct is 0, so existing seeds are unchanged. */
+    if (g->barrier_pct && cirr_pct(rng, g->barrier_pct)) {
+        cbae_cir_value_t *args[2];
+        const uint8_t argc = (uint8_t)cirr_below(rng, 3);
+        for (uint8_t i = 0; i < argc; i++) args[i] = cirg_opnd(g, b);
+        cbae_cir_value_t *v = cirr_pct(rng, 25)
+            ? cbae_cir_emit(&g->bld, CIR_OP_API_CALL, t64, 0, args, argc)
+            : cbae_cir_call(&g->bld, "ext_fn", args, argc, t64, 0);
+        assert(v);
+        cirg_add_def(&g->defs[b], v, CIRG_I64);
+        return;
+    }
+
+    const uint32_t r = cirr_below(rng, 100);
 
     if (r < 14) {
         cirg_def_binop(g, b, CIR_OP_ADD, cirg_opnd(g, b),
@@ -481,8 +519,21 @@ static void cirg_emit_random(cirg_t *g, uint32_t b) {
     } else if (r < 51) {
         cirg_emit_narrow(g, b);
     } else if (r < 64) {
-        const cirg_class_t c = cirg_data_class(g);
-        cbae_cir_value_t *v = cbae_cir_load(&g->bld, cirg_address(g, b), cirg_type_of(c), 0);
+        cirg_class_t c = cirg_data_class(g);
+        const cirg_recipe_t *again = NULL;          /* reload_pct: read back a recent store's bytes */
+        uint32_t k = 0;
+        if (g->reload_pct && g->nstored && cirr_pct(rng, g->reload_pct)) {
+            k = cirr_below(rng, g->nstored < 4 ? g->nstored : 4);
+            if ((g->dom[b] >> g->stored[k].blk) & 1u) again = &g->stored[k];
+        }
+        cbae_cir_value_t *addr;
+        if (again) {
+            addr = cirg_emit_address(g, b, again);
+            if (cirr_pct(rng, 75)) c = (cirg_class_t)g->stored_cls[k];
+        } else {
+            addr = cirg_address(g, b);
+        }
+        cbae_cir_value_t *v = cbae_cir_load(&g->bld, addr, cirg_type_of(c), 0);
         assert(v);
         cirg_add_def(&g->defs[b], v, c);
     } else if (r < 77) {
@@ -490,7 +541,21 @@ static void cirg_emit_random(cirg_t *g, uint32_t b) {
         cbae_cir_value_t *data = c == CIRG_I64 ? cirg_i64(g, b) : cirg_pick(g, b, c);
         if (!data) data = cbae_cir_const(&g->bld, cirg_type_of(c),
                                          (int64_t)CIRR_POOL[cirr_below(rng, CIRR_POOL_N)]);
-        cbae_cir_store(&g->bld, cirg_address(g, b), data, 0);
+        cirg_recipe_t used;
+        cbae_cir_value_t *addr = cirg_address_rc(g, b, &used);
+        cbae_cir_store(&g->bld, addr, data, 0);
+        if (g->reload_pct) {
+            g->stored[g->nstored & 3u]     = used;
+            g->stored_cls[g->nstored & 3u] = (uint8_t)c;
+            g->nstored++;
+            if (cirr_pct(rng, g->reload_pct / 3)) {              /* the reload, at once */
+                cbae_cir_value_t *a2 = cirr_pct(rng, 50) ? addr : cirg_emit_address(g, b, &used);
+                const cirg_class_t c2 = cirr_pct(rng, 85) ? c : cirg_data_class(g);
+                cbae_cir_value_t *v = cbae_cir_load(&g->bld, a2, cirg_type_of(c2), 0);
+                assert(v);
+                cirg_add_def(&g->defs[b], v, c2);
+            }
+        }
     } else if (r < 80) {
         cbae_cir_value_t *args[2];
         const uint8_t argc = (uint8_t)cirr_below(rng, 3);
@@ -591,9 +656,9 @@ static bool cirg_has_back_pred(const cirg_t *g, uint32_t b) {
 /** Three sizes, chosen by seed so a run of consecutive seeds covers them all. */
 static cirg_params_t cirg_params_for_seed(uint64_t seed) {
     static const cirg_params_t P[3] = {
-        { 2,  6,  6, 35 },
-        { 5, 14,  8, 30 },
-        { 12, 32, 10, 22 },
+        { 2,  6,  6, 35, 0, 0 },
+        { 5, 14,  8, 30, 0, 0 },
+        { 12, 32, 10, 22, 0, 0 },
     };
     return P[seed % 3];
 }
@@ -605,6 +670,8 @@ static bool cirg_build(cirg_t **out, uint64_t seed, const cirg_params_t *p) {
     cirg_t *g = calloc(1, sizeof *g);
     if (!g) return false;
     g->rng.s = seed * 0x2545F4914F6CDD1Dull + 0x1234567ull;
+    g->barrier_pct = p->barrier_pct;
+    g->reload_pct  = p->reload_pct;
     cirr_rng_t *rng = &g->rng;
 
     if (cbae_arena_init(&g->arena, 8u * 1024 * 1024) != CBAE_OK) { free(g); return false; }
@@ -760,6 +827,7 @@ typedef struct {
     cirx_slot_t *slots;
     size_t       cap, count;
     uint64_t     seed;
+    uint32_t    *live;      /* [instruction id] bytes it is currently the last writer of */
 } cirx_mem_t;
 
 typedef struct cirx_hooks {
@@ -775,6 +843,14 @@ typedef struct cirx_hooks {
                     uint32_t size, const int32_t *writers);
     /** A CALL overwrote [addr, addr+size). */
     void (*on_call_write)(void *user, const cbae_cir_instruction_t *insn, uint64_t addr, uint32_t size);
+    /** A STORE wrote `data` (already truncated to `size` bytes) at [addr, addr+size). */
+    void (*on_store)(void *user, const cbae_cir_instruction_t *insn, uint64_t addr,
+                     uint32_t size, uint64_t data);
+    /** About to execute `insn` (never a phi). live_bytes[id] is how many bytes the
+     *  instruction with that id (a STORE or CALL) is CURRENTLY the last writer of;
+     *  it has f->next_insn_id entries. */
+    void (*on_step)(void *user, const cbae_cir_instruction_t *insn,
+                    const uint32_t *live_bytes, uint64_t step);
 } cirx_hooks_t;
 
 typedef struct { uint64_t steps; bool returned; } cirx_result_t;
@@ -784,14 +860,18 @@ static inline uint64_t cirx_mask(cbae_cir_type_t t) {
     return bits >= 64 ? ~0ull : bits == 0 ? 0ull : ((1ull << bits) - 1ull);
 }
 
-static void cirx_mem_init(cirx_mem_t *m, uint64_t seed) {
+static void cirx_mem_init(cirx_mem_t *m, uint64_t seed, uint32_t ninsn) {
     m->cap = 1u << 10;
     m->count = 0;
     m->seed = seed;
     m->slots = calloc(m->cap, sizeof *m->slots);
-    assert(m->slots);
+    m->live = calloc(ninsn ? ninsn : 1, sizeof *m->live);
+    assert(m->slots && m->live);
 }
-static void cirx_mem_destroy(cirx_mem_t *m) { free(m->slots); m->slots = NULL; }
+static void cirx_mem_destroy(cirx_mem_t *m) {
+    free(m->slots); m->slots = NULL;
+    free(m->live);  m->live = NULL;
+}
 
 static cirx_slot_t *cirx_mem_find(const cirx_mem_t *m, uint64_t addr) {
     size_t i = (size_t)(cirr_mix(addr) & (m->cap - 1));
@@ -824,8 +904,11 @@ static void cirx_mem_put(cirx_mem_t *m, uint64_t addr, uint8_t val, int32_t writ
         s = &m->slots[i];
         s->used = 1;
         s->key = addr;
+        s->writer = -1;                 /* a fresh slot has no previous writer to retire */
         m->count++;
     }
+    if (s->writer >= 0) m->live[s->writer]--;
+    if (writer >= 0)    m->live[writer]++;
     s->val = val;
     s->writer = writer;
 }
@@ -895,7 +978,7 @@ static void cirx_run(const cbae_cir_function_t *f, uint64_t seed, uint64_t max_s
     cirr_rng_t rng = { .s = seed ^ 0xC0FFEEull };
     const cirx_state_t state = { val, def, vol, &rng };
     cirx_mem_t mem;
-    cirx_mem_init(&mem, seed);
+    cirx_mem_init(&mem, seed, f->next_insn_id);
 
     const uint32_t nv = (uint32_t)cbae_vector_count(&f->values);
     for (uint32_t i = 0; i < nv; i++) {
@@ -952,6 +1035,7 @@ static void cirx_run(const cbae_cir_function_t *f, uint64_t seed, uint64_t max_s
         for (; ip < blk->instruction_count && !returned && next == UINT32_MAX; ip++) {
             const cbae_cir_instruction_t *in = blk->instructions[ip];
             steps++;
+            if (hk && hk->on_step) hk->on_step(hk->user, in, mem.live, steps);
             uint64_t r = 0;
             bool has_result = in->result != NULL;
             const uint64_t m = in->result ? cirx_mask(in->result->type) : ~0ull;
@@ -991,12 +1075,16 @@ static void cirx_run(const cbae_cir_function_t *f, uint64_t seed, uint64_t max_s
                     const uint64_t data = GET(in->operands[1]);
                     const uint32_t size = cir_type_bytes(in->operands[1]->type);
                     cirx_write(&mem, addr, size, data, (int32_t)in->id);
+                    if (hk && hk->on_store)
+                        hk->on_store(hk->user, in, addr, size,
+                                     size >= 8 ? data : data & ((1ull << (8 * size)) - 1));
                     if (hk && hk->on_access) hk->on_access(hk->user, in, addr, size, true, steps);
                     recent[nrecent++ & 15u] = addr;
                     has_result = false;
                     break;
                 }
-                case CIR_OP_CALL: {
+                case CIR_OP_CALL:
+                case CIR_OP_API_CALL: {
                     for (uint8_t k = 0; k < in->operand_count; k++) (void)GET(in->operands[k]);
                     r = cirr_pct(&rng, 60) ? CIRR_POOL[cirr_below(&rng, CIRR_POOL_N)] : cirr_next(&rng);
                     const uint32_t nw = 1 + cirr_below(&rng, 3);

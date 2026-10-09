@@ -31,6 +31,22 @@ not only read.
 | A-017 | `alias_analysis.c` (root cause A-002) | Soundness bug in Phase 5 code: all narrow registers are one SSA value, `other`, so `ecx*4 - edx*4` cancelled to 0 and two different addresses were reported identical. Found by the random test (seed 16) after the generator learnt the lifter's conflation. Fix: an instruction that reads `other` is an atom (its result is one value per execution); a phi of `other` never resolves to it. Regression test `t_other_conflation`. Every later pass must treat `other` as unknown and never equal to itself. | HIGH | fixed in the analysis; root cause open (A-002) |
 | A-018 | Phase 4 lifter (`cir_lifter_memory.c`) | `push qword [rbx]` stores the ADDRESS rbx instead of the loaded value; `pop qword [rbx]` discards the value and stores nothing (only rsp changes). Same root as A-001: a MEM operand converts to its address. Verified on printed CIR. | HIGH | open |
 | A-019 | `cir_lifter_memory.c` header, `cir_opcodes.h` | The header says LEA lifts to `CIR_OP_LEA`; the lifter never emits it (LEA yields the bare address expression), so `CIR_OP_LEA` is unused. Check which other "syntactic" opcodes are never emitted (DIV, PUSH, POP, MMIO...) and remove or implement them. | LOW | open |
+| A-020 | `reaching_stores.c` (Phase 5) | The header promised that blocks the entry cannot reach have empty answers, but the code still returned the writes that precede a load inside such a block, and let an unreachable block's writes flow into the reachable block it branches to (over-approximation, not unsoundness). Found while explaining a surviving mutant (`forwardable-accepts-barrier`, which only an unreachable block could expose). Fix: a block whose IN lacks the entry-reaches bit passes nothing on, `for_load` returns 0/false for it, `may_reach` is false in it. Tests `t_unreachable` (three cases). | LOW | fixed (Phase 5) |
+
+## Precision items (the analyses are sound; these are answers less sharp than the truth)
+
+| ID | Where | Item | Status |
+|----|-------|------|--------|
+| P-001 | `alias_analysis.c`, `reaching_stores.c` | An address built from a loop-carried value (a phi on a cycle) is never provably the same as another access to "the same" address, so a store and a reload through a loop pointer never forward and never kill. Fix would be intra-block, time-consistent alias queries (two uses of one value between the same two redefinitions are equal). Needed by Phase 6 for loops over arrays of structures. | open |
+| P-002 | `reaching_stores.c` | Every CALL is a barrier with no summary, so in call-heavy code most answers are dominated by calls. Random executions cannot measure the loss (a call's real writes are few), the hand-derived tests show it is exact for what CIR can say. Phase 6 should add summaries for the kernel APIs whose effect is known (the `windows_kernel_api.sql` / `linux_kernel_api.sql` tables) and an escape analysis for stack slots whose address is never passed out. | open |
+| P-003 | `alias_analysis.c`, `reaching_stores.c` | A wider store covering a narrower load (or the reverse) is MAY, never "contains". Moot until the lifter models access widths (A-006): today every lifted access is 64 bits. | open (blocked on A-006) |
+| P-004 | `reaching_stores.c` | Joint-path over-approximation: a store that escapes its own class's later stores on one path and the load class's stores on another stays in the answer. Pinned exactly by `t_documented_limits`. | documented |
+
+Equivalent mutants kept on purpose: in `cbae_reaching_stores_forwardable` the
+"single definition is not a barrier" and "alias MUST" tests cannot fail once
+`n == 1 && !initial` (the only way to exclude initial content is a store of
+the load's own class, which is then the single definition). They stay because
+the documented contract is the conjunction; the comment in the source says so.
 
 ## Strengths to credit in the audit report
 
@@ -52,3 +68,9 @@ Noted as found, with the evidence, so the report names specifics.
   plus a concrete interpreter) found three real soundness bugs (A-015..A-017)
   that hand-written tests and 93 killed mutants had not, and will be reused to
   test the lifter itself against Unicorn in Phase 4.5.
+- The same harness, extended with per-byte last-writer tracking, checks reaching
+  stores against 1,500 random functions (74,000 load executions, 4.5 million
+  raw-dataflow checks, 5,000 forwarded executions) with nine forged claims that
+  must each be caught. A 61-mutant campaign on `reaching_stores.c` was killed
+  except two proved-equivalent defensive checks, and exposed the A-020
+  doc/code mismatch.

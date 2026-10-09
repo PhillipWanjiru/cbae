@@ -138,6 +138,7 @@ add_library(cbae_dataflow STATIC
     src/dataflow/dataflow_engine.c
     src/dataflow/use_def.c
     src/dataflow/alias_analysis.c
+    src/dataflow/reaching_stores.c
 )
 target_link_libraries(cbae_dataflow PUBLIC cbae_cir cbae_platform)
 
