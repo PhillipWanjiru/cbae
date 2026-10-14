@@ -75,6 +75,14 @@ typedef struct {
 typedef struct { uint32_t sig; uint8_t guid[16]; uint32_t age; char fn[1]; } cv_pdb_t;
 #pragma pack(pop)
 
+/* Reads from the mapped file. A PE puts its tables wherever the linker put them (or a hostile
+ * file says it did), so a pointer into the file is not necessarily aligned for its type, and
+ * dereferencing a misaligned pointer is undefined behaviour even where the CPU tolerates it.
+ * memcpy is the portable read. */
+static uint16_t rd16(const void *p) { uint16_t v; memcpy(&v,p,sizeof v); return v; }
+static uint32_t rd32(const void *p) { uint32_t v; memcpy(&v,p,sizeof v); return v; }
+static uint64_t rd64(const void *p) { uint64_t v; memcpy(&v,p,sizeof v); return v; }
+
 static const uint8_t *rptr(const uint8_t *b, cbae_size_t fsz, uint32_t rva,
                              const pe_shdr_t *s, uint16_t n) {
     for (uint16_t i=0;i<n;i++) {
@@ -124,9 +132,9 @@ static cbae_err_t do_imports(cbae_binary_image_t *img, const pe_dd_t *dir,
     if(!desc) return CBAE_OK;
     uint32_t total=0;
     for(const pe_idesc_t *d=desc;d->name_rva;d++) {
-        const uint64_t *ilt=(const uint64_t*)rptr(img->file_data,img->file_size,
-                                                    d->ilt_rva?d->ilt_rva:d->iat_rva,sh,nsec);
-        if(ilt) for(const uint64_t *e=ilt;*e;e++) total++;
+        const uint8_t *ilt=rptr(img->file_data,img->file_size,
+                                  d->ilt_rva?d->ilt_rva:d->iat_rva,sh,nsec);
+        if(ilt) for(uint32_t k=0;rd64(ilt+(size_t)k*8);k++) total++;
     }
     if(!total) return CBAE_OK;
     img->imports=CBAE_ARENA_ALLOC_N(&img->arena,cbae_import_entry_t,total);
@@ -135,25 +143,25 @@ static cbae_err_t do_imports(cbae_binary_image_t *img, const pe_dd_t *dir,
     for(const pe_idesc_t *d=desc;d->name_rva;d++) {
         const char *dll=(const char*)rptr(img->file_data,img->file_size,d->name_rva,sh,nsec);
         if(!dll) continue;
-        const uint64_t *ilt=(const uint64_t*)rptr(img->file_data,img->file_size,
-                                                    d->ilt_rva?d->ilt_rva:d->iat_rva,sh,nsec);
+        const uint8_t *ilt=rptr(img->file_data,img->file_size,
+                                  d->ilt_rva?d->ilt_rva:d->iat_rva,sh,nsec);
         if(!ilt) continue;
         uint32_t ent=0;
-        for(const uint64_t *e=ilt;*e;e++,ent++) {
+        for(uint64_t e;(e=rd64(ilt+(size_t)ent*8))!=0;ent++) {
             cbae_import_entry_t *imp=&img->imports[idx++];
             memset(imp,0,sizeof(*imp));
             strncpy(imp->module,dll,CBAE_IMPORT_MODULE_MAX-1);
             imp->iat_va=(cbae_addr_t)(ib+d->iat_rva+ent*sizeof(uint64_t));
             imp->rela_offset=(cbae_off_t)CBAE_ADDR_INVALID;
-            if(*e & PE_ORDINAL_FLAG64) {
-                imp->ordinal=(uint16_t)(*e&0xFFFF);
+            if(e & PE_ORDINAL_FLAG64) {
+                imp->ordinal=(uint16_t)(e&0xFFFF);
                 imp->state=CBAE_IMPORT_BY_ORDINAL;
                 snprintf(imp->name,CBAE_IMPORT_NAME_MAX,"ord#%u",imp->ordinal);
             } else {
                 const uint8_t *hn=rptr(img->file_data,img->file_size,
-                                        (uint32_t)(*e&0x7FFFFFFF),sh,nsec);
+                                        (uint32_t)(e&0x7FFFFFFF),sh,nsec);
                 if(hn) {
-                    imp->hint=*(const uint16_t*)hn;
+                    imp->hint=rd16(hn);
                     strncpy(imp->name,(const char*)(hn+2),CBAE_IMPORT_NAME_MAX-1);
                     imp->state=CBAE_IMPORT_BY_NAME;
                 }
@@ -177,16 +185,16 @@ static cbae_err_t do_exports(cbae_binary_image_t *img, const pe_dd_t *dir,
     if(!syms) CBAE_RETURN_ERR(CBAE_ERR_OOM,"export syms");
     if(img->symbols&&base) memcpy(syms,img->symbols,base*sizeof(cbae_symbol_t));
     img->symbols=syms;
-    const uint32_t *names=(const uint32_t*)rptr(img->file_data,img->file_size,ed->names_rva,sh,nsec);
-    const uint16_t *ords =(const uint16_t*)rptr(img->file_data,img->file_size,ed->ords_rva,sh,nsec);
-    const uint32_t *funcs=(const uint32_t*)rptr(img->file_data,img->file_size,ed->funcs_rva,sh,nsec);
+    const uint8_t *names=rptr(img->file_data,img->file_size,ed->names_rva,sh,nsec);   /* uint32_t[] */
+    const uint8_t *ords =rptr(img->file_data,img->file_size,ed->ords_rva,sh,nsec);    /* uint16_t[] */
+    const uint8_t *funcs=rptr(img->file_data,img->file_size,ed->funcs_rva,sh,nsec);   /* uint32_t[] */
     if(!names||!ords||!funcs) return CBAE_OK;
     for(uint32_t i=0;i<ed->nnames;i++) {
         cbae_symbol_t *sym=&img->symbols[base+i];
         memset(sym,0,sizeof(*sym));
-        const char *nm=(const char*)rptr(img->file_data,img->file_size,names[i],sh,nsec);
+        const char *nm=(const char*)rptr(img->file_data,img->file_size,rd32(names+(size_t)i*4),sh,nsec);
         if(nm) strncpy(sym->name,nm,CBAE_SYM_NAME_MAX-1);
-        sym->address=(cbae_addr_t)(ib+funcs[ords[i]]);
+        sym->address=(cbae_addr_t)(ib+rd32(funcs+(size_t)rd16(ords+(size_t)i*2)*4));
         sym->type=CBAE_SYM_EXPORT; sym->binding=CBAE_BIND_GLOBAL;
         sym->kind=CBAE_KIND_FUNCTION; sym->table_index=base+i;
     }
@@ -213,9 +221,10 @@ static cbae_err_t do_relocs(cbae_binary_image_t *img, const pe_dd_t *dir,
         const pe_rblk_t *b=(const pe_rblk_t*)c;
         if(b->bsz<sizeof(pe_rblk_t)) break;
         uint32_t n=(b->bsz-sizeof(pe_rblk_t))/2;
-        const uint16_t *ents=(const uint16_t*)(c+sizeof(pe_rblk_t));
+        const uint8_t *ents=c+sizeof(pe_rblk_t);                       /* uint16_t[] */
         for(uint32_t i=0;i<n;i++) {
-            uint8_t rt=(uint8_t)(ents[i]>>12); uint16_t ro=ents[i]&0x0FFF;
+            const uint16_t ent=rd16(ents+(size_t)i*2);
+            uint8_t rt=(uint8_t)(ent>>12); uint16_t ro=ent&0x0FFF;
             cbae_relocation_t *r=&img->relocations[idx];
             memset(r,0,sizeof(*r));
             r->page_rva=b->prva;
@@ -268,8 +277,7 @@ cbae_err_t cbae_pe_load(const char *path, cbae_binary_image_t **out) {
     if(dos->magic!=PE_DOS_MAGIC){cbae_image_destroy(&img);CBAE_RETURN_ERR(CBAE_ERR_PARSE,"bad MZ");}
     if(dos->e_lfanew+4+sizeof(pe_coff_t)>img->file_size){
         cbae_image_destroy(&img);CBAE_RETURN_ERR(CBAE_ERR_PARSE,"e_lfanew OOB");}
-    const uint32_t *sig=(const uint32_t*)(data+dos->e_lfanew);
-    if(*sig!=PE_SIGNATURE){cbae_image_destroy(&img);CBAE_RETURN_ERR(CBAE_ERR_PARSE,"bad PE sig");}
+    if(rd32(data+dos->e_lfanew)!=PE_SIGNATURE){cbae_image_destroy(&img);CBAE_RETURN_ERR(CBAE_ERR_PARSE,"bad PE sig");}
     const pe_coff_t *coff=(const pe_coff_t*)(data+dos->e_lfanew+4);
     img->arch=(coff->machine==PE_MACHINE_AMD64)?CBAE_ARCH_X86_64:
               (coff->machine==PE_MACHINE_ARM64)?CBAE_ARCH_ARM64:CBAE_ARCH_UNKNOWN;

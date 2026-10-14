@@ -127,8 +127,8 @@ target_link_libraries(cbae_cir PUBLIC cbae_platform cbae_disasm)
 
 # ── LAYER 7: cbae_dataflow (Phase 5) ──────────────────────────────────────────
 # Dominator tree, post-dominator tree, generic dataflow engine, alias
-# analysis, reaching stores, use-def chains, constant propagation.
-# Depends on cbae_cir (operates on lifted, SSA-form CIR functions).
+# analysis, reaching stores, use-def chains, constant propagation, SSA
+# verification. Depends on cbae_cir (operates on lifted, SSA-form CIR functions).
 add_library(cbae_dataflow STATIC
     src/dataflow/cfg_graph.c
     src/dataflow/graph_scc.c
@@ -139,6 +139,8 @@ add_library(cbae_dataflow STATIC
     src/dataflow/use_def.c
     src/dataflow/alias_analysis.c
     src/dataflow/reaching_stores.c
+    src/dataflow/const_prop.c
+    src/dataflow/ssa_verifier.c
 )
 target_link_libraries(cbae_dataflow PUBLIC cbae_cir cbae_platform)
 

@@ -440,6 +440,130 @@ static void t_ssa_rejects_entry_with_predecessor(void) {
            "(error, not a crash)\n");
 }
 
+/* Operands, anywhere in `f`, that are still an unresolved register-entry placeholder. */
+static uint32_t count_unresolved_operands(const cbae_cir_function_t *f) {
+    uint32_t n = 0;
+    for (size_t b = 0; b < cbae_vector_count(&f->blocks); b++) {
+        const cbae_cir_block_t *blk = *(cbae_cir_block_t **)cbae_vector_at(&f->blocks, b);
+        for (uint32_t i = 0; i < blk->instruction_count; i++) {
+            const cbae_cir_instruction_t *in = blk->instructions[i];
+            for (uint8_t k = 0; k < in->operand_count; k++)
+                if (in->operands[k] && in->operands[k]->kind == CIR_VAL_REG_ENTRY) n++;
+        }
+    }
+    return n;
+}
+
+/* ── Test 7: a loop head that reads several registers it has not written ──
+ *
+ *   0x2000: 48 C7 C0 00 00 00 00   mov rax, 0
+ *   0x2007: 48 01 C2               add rdx, rax     <- loop head
+ *   0x200A: 48 83 C0 01            add rax, 1
+ *   0x200E: 48 39 F8               cmp rax, rdi
+ *   0x2011: 75 F4                  jne 0x2007       <- back edge
+ *   0x2013: C3                     ret
+ *
+ * The loop head (block1) has two predecessors, so every register it reads
+ * before writing needs a phi, and each phi is inserted at the FRONT of block1
+ * itself -- while the constructor is still walking block1's instructions.
+ * Hand-derived expected CIR (the phis' own order is not specified):
+ *
+ *   block1: preds block0 block1
+ *     phi rdx [param rdx, block0] [add1, block1]
+ *     phi rax [const 0,   block0] [add2, block1]
+ *     phi rdi [param rdi, block0] [itself, block1]     <- never written: invariant
+ *     add1 = add  rdx_phi, rax_phi
+ *     add2 = add  rax_phi, 1
+ *     cmp  = cmp  add2, rdi_phi                        <- the third read
+ *     branch cmp, block1, block2
+ *
+ * Before the fix the constructor counted block1's instructions once, before
+ * resolving anything, and then walked that many positions. Resolving add1's two
+ * operands put two phis in front of add1, which moved cmp and the branch out past
+ * the end of the walk, so cmp kept an unresolved rdi placeholder. It was found by
+ * running the SSA verifier on gcc output (sum_to). Tests 3-5 never had an
+ * unresolved read among the last instructions of a join block. */
+static void t_loop_reads_several_live_in_registers(void) {
+    uint8_t code[] = {
+        0x48,0xC7,0xC0,0x00,0x00,0x00,0x00,
+        0x48,0x01,0xC2,
+        0x48,0x83,0xC0,0x01,
+        0x48,0x39,0xF8,
+        0x75,0xF4,
+        0xC3
+    };
+    assert(sizeof(code) == 20);
+
+    cbae_binary_image_t *img = make_code_image(code, sizeof(code), 0x2000);
+    cbae_disassembler_t *d;
+    cbae_disasm_create(CBAE_ARCH_X86_64, &d);
+    cbae_arena_t arena;
+    cbae_arena_init(&arena, 256 * 1024);
+
+    cbae_cfg_t cfg;
+    assert(cbae_cfg_build(img, d, 0x2000, &arena, &cfg) == CBAE_OK);
+    assert(cbae_cfg_block_count(&cfg) == 3);
+
+    cbae_cir_function_t *f;
+    assert(cbae_cir_lift_function(img, &cfg, NULL, &arena, "live_in", &f) == CBAE_OK);
+    assert(cbae_cir_construct_ssa(f) == CBAE_OK);
+
+    cbae_cir_block_t *entry = cbae_cir_function_block_at(f, 0x2000);
+    cbae_cir_block_t *head  = cbae_cir_function_block_at(f, 0x2007);
+    assert(entry != NULL && head != NULL);
+    assert(cbae_vector_count(&head->predecessors) == 2);
+
+    if (count_unresolved_operands(f) != 0) {
+        printf("\n--- CIR with unresolved operands ---\n");
+        cbae_cir_print_function(f, stdout);
+    }
+    assert(count_unresolved_operands(f) == 0);
+
+    /* Three phis, then the four instructions in program order. */
+    assert(head->instruction_count == 7);
+    assert(count_opcode(head, CIR_OP_PHI) == 3);
+    for (uint32_t i = 0; i < 3; i++) assert(head->instructions[i]->opcode == CIR_OP_PHI);
+    cbae_cir_instruction_t *add1 = head->instructions[3];
+    cbae_cir_instruction_t *add2 = head->instructions[4];
+    cbae_cir_instruction_t *cmp  = head->instructions[5];
+    cbae_cir_instruction_t *br   = head->instructions[6];
+    assert(add1->opcode == CIR_OP_ADD && add2->opcode == CIR_OP_ADD);
+    assert(cmp->opcode == CIR_OP_CMP && br->opcode == CIR_OP_BRANCH);
+
+    cbae_cir_instruction_t *phi_rdx = find_phi_with_param(head, entry->id, CBAE_REG_RDX);
+    cbae_cir_instruction_t *phi_rdi = find_phi_with_param(head, entry->id, CBAE_REG_RDI);
+    cbae_cir_instruction_t *phi_rax = NULL;            /* the one that receives const 0 from the entry */
+    for (uint32_t i = 0; i < 3; i++) {
+        cbae_cir_value_t *v = phi_incoming_from(head->instructions[i], entry->id);
+        if (v && v->kind == CIR_VAL_CONST && v->u.const_val == 0) phi_rax = head->instructions[i];
+    }
+    assert(phi_rdx != NULL && phi_rdi != NULL && phi_rax != NULL);
+    assert(phi_rdx != phi_rdi && phi_rdx != phi_rax && phi_rdi != phi_rax);
+
+    assert(add1->operands[0] == phi_rdx->result);
+    assert(add1->operands[1] == phi_rax->result);
+    assert(add2->operands[0] == phi_rax->result);
+    assert(cmp->operands[0]  == add2->result);
+    assert(cmp->operands[1]  == phi_rdi->result);           /* the read the old walk never reached */
+    assert(br->operands[0]   == cmp->result);
+
+    assert(phi_incoming_from(phi_rdx, head->id) == add1->result);
+    assert(phi_incoming_from(phi_rax, head->id) == add2->result);
+    assert(phi_incoming_from(phi_rdi, head->id) == phi_rdi->result);   /* invariant around the loop */
+
+    cbae_cir_verify_result_t vr = cbae_cir_verify_function(f);
+    if (!vr.ok) fprintf(stderr, "VERIFIER FAILED: %s\n", vr.message);
+    assert(vr.ok);
+
+    cbae_cir_function_destroy(f);
+    cbae_cfg_destroy(&cfg);
+    cbae_arena_destroy(&arena);
+    cbae_disasm_destroy(&d);
+    cbae_image_destroy(&img);
+    printf("  [PASS] loop head reading three unwritten registers: every read resolved, "
+           "including the one after the phis\n");
+}
+
 int main(void) {
     printf("=== test_ssa_construction ===\n");
     cbae_log_init(CBAE_LOG_WARN, NULL, 0);
@@ -450,6 +574,7 @@ int main(void) {
     t_entry_block_is_loop_header();
     t_entry_back_edge_invariant_register();
     t_ssa_rejects_entry_with_predecessor();
+    t_loop_reads_several_live_in_registers();
 
     printf("All SSA construction tests passed.\n");
     return 0;

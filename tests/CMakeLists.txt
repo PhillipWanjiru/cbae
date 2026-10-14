@@ -35,6 +35,7 @@ cbae_add_test(test_cir_builder       unit/test_cir_builder.c       cbae_cir cbae
 cbae_add_test(test_cir_lifter        unit/test_cir_lifter.c        cbae_cir cbae_disasm cbae_loader)
 cbae_add_test(test_ssa_construction  unit/test_ssa_construction.c  cbae_cir cbae_disasm cbae_loader)
 cbae_add_test(test_disasm_to_cir     unit/test_disasm_to_cir.c     cbae_cir cbae_disasm cbae_loader)
+cbae_add_test(test_cir_verifier      unit/test_cir_verifier.c      cbae_cir cbae_disasm cbae_loader)
 
 # ── Phase 5 — Dataflow Infrastructure ─────────────────────────────────────
 cbae_add_test(test_dominator_tree    unit/test_dominator_tree.c    cbae_dataflow cbae_cir cbae_disasm cbae_loader)
@@ -45,6 +46,10 @@ cbae_add_test(test_alias_analysis    unit/test_alias_analysis.c    cbae_dataflow
 cbae_add_test(test_alias_soundness   unit/test_alias_soundness.c   cbae_dataflow cbae_cir cbae_disasm cbae_loader)
 cbae_add_test(test_reaching_stores   unit/test_reaching_stores.c   cbae_dataflow cbae_cir cbae_disasm cbae_loader)
 cbae_add_test(test_reaching_soundness unit/test_reaching_soundness.c cbae_dataflow cbae_cir cbae_disasm cbae_loader)
+cbae_add_test(test_const_prop         unit/test_const_prop.c         cbae_dataflow cbae_cir cbae_disasm cbae_loader)
+cbae_add_test(test_const_prop_soundness unit/test_const_prop_soundness.c cbae_dataflow cbae_cir cbae_disasm cbae_loader)
+cbae_add_test(test_ssa_verifier      unit/test_ssa_verifier.c      cbae_dataflow cbae_cir cbae_disasm cbae_loader)
+cbae_add_test(test_compiled_code      unit/test_compiled_code.c     cbae_dataflow cbae_cir cbae_disasm cbae_loader)
 cbae_add_test(test_graph_scc         unit/test_graph_scc.c         cbae_dataflow cbae_cir cbae_disasm cbae_loader)
 # graph_scc / dom_core are internal headers; this test exercises them directly.
 target_include_directories(test_graph_scc PRIVATE ${CMAKE_SOURCE_DIR}/src/dataflow)

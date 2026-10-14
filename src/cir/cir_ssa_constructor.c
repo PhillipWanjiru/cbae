@@ -167,15 +167,20 @@ cbae_err_t cbae_cir_construct_ssa(cbae_cir_function_t *func) {
         cbae_cir_block_t **bp = cbae_vector_at(&func->blocks, bi);
         cbae_cir_block_t *blk = *bp;
 
-        /* Snapshot the count: cbae_cir_phi_create(), triggered from
-         * inside resolve_entry_value/read_predecessor_value while
-         * walking THIS block's own operands, only ever inserts phis at
-         * the FRONT of OTHER (predecessor/join) blocks -- never this
-         * one mid-iteration -- but capturing instruction_count upfront
-         * makes that guarantee obviously safe rather than relying on
-         * reasoning about it while reading this loop. */
-        uint32_t icount = blk->instruction_count;
-        for (uint32_t ii = 0; ii < icount; ii++) {
+        /* The instruction count is read afresh on every step, never taken
+         * once before the walk. Resolving an operand of THIS block can
+         * insert a phi at the FRONT of this very block -- a join block
+         * needs one for each register its own instructions read before
+         * writing -- and that moves every instruction one position later.
+         * A count taken up front would end the walk before the block's last
+         * instructions, leaving their placeholders unresolved (the bug
+         * t_loop_reads_several_live_in_registers pins down). Walking on the
+         * live count may step onto an instruction it has already resolved,
+         * which is harmless: none of its operands is a placeholder any more.
+         * It never steps OVER one: the index advances by one per step, an
+         * instruction yet to be visited sits at a later position, and phis
+         * only push positions further out. */
+        for (uint32_t ii = 0; ii < blk->instruction_count; ii++) {
             cbae_cir_instruction_t *insn = blk->instructions[ii];
             if (insn->opcode == CIR_OP_PHI) continue;
 

@@ -1,13 +1,18 @@
 /**
  * @file cir_verifier.h
- * @brief Structural correctness checks for a lifted CIR function.
+ * @brief Structural correctness checks for a CIR function.
  *
- * SCOPE: structural, not a full SSA dominance proof. Checks every
- * operand references a value the function actually defined, every
- * phi's incoming-block list matches its block's real predecessor set,
- * and every branch/jump target is a real block. Verifying a use's
- * defining block genuinely DOMINATES the use needs a dominator tree --
- * Phase 5 infrastructure, deferred there rather than duplicated here.
+ * SCOPE: structure, not SSA dominance. A function that passes has ids that are
+ * unique and equal to their table indices, operand slots that hold registered
+ * values (none an unresolved placeholder), results that belong to their
+ * instructions, phis that lead their block and match its predecessors exactly,
+ * branch targets that exist, and edges recorded once on both sides. The full
+ * list, in the order it is checked, is at the top of cir_verifier.c.
+ *
+ * What it does NOT say is whether a value is available where it is used: that
+ * needs the dominator relation (Phase 5) and is cbae_ssa_verify_function() in
+ * dataflow/ssa_verifier.h, which calls this first. Operand types and operand
+ * counts per opcode are not checked by either.
  */
 #ifndef CBAE_CIR_VERIFIER_H
 #define CBAE_CIR_VERIFIER_H
@@ -23,9 +28,11 @@ extern "C" {
 
 typedef struct cbae_cir_verify_result {
     bool ok;
-    char message[CIR_VERIFY_MSG_MAX];
+    char message[CIR_VERIFY_MSG_MAX];   /* empty when ok; else the first violation found */
 } cbae_cir_verify_result_t;
 
+/** Check `f`'s structure. A NULL function is reported as "null function"; a
+ *  function with no blocks passes. Never modifies `f`. */
 cbae_cir_verify_result_t cbae_cir_verify_function(const cbae_cir_function_t *f);
 
 #ifdef __cplusplus

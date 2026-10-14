@@ -12,6 +12,7 @@
  */
 #include "instruction_lifter.h"
 #include "operand_decoder.h"
+#include <stdio.h>
 #include <string.h>
 
 static cbae_insn_class_t classify(const cs_insn *ci) {
@@ -74,7 +75,9 @@ void cbae_lift_instruction(const cs_insn *ci, cbae_instruction_t *out) {
     memcpy(out->raw, ci->bytes,
            ci->size <= CBAE_INSN_MAX_BYTES ? ci->size : CBAE_INSN_MAX_BYTES);
 
-    strncpy(out->mnemonic, ci->mnemonic, CBAE_MNEMONIC_MAX - 1);
+    /* `out` was zeroed above; snprintf copies at most CBAE_MNEMONIC_MAX - 1 characters and always
+     * terminates, which strncpy only does when the source is short enough (audit A-011). */
+    snprintf(out->mnemonic, sizeof out->mnemonic, "%s", ci->mnemonic);
     out->cs_id  = (uint32_t)ci->id;
     out->iclass = classify(ci);
 

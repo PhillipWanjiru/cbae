@@ -33,6 +33,7 @@
 #include "cir/cir_serializer.h"
 #include "cir/cir_builder.h"
 #include "platform/hashmap.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -98,8 +99,8 @@ cbae_err_t cbae_cir_serialize_function(const cbae_cir_function_t *f,
     uint32_t nblocks = (uint32_t)cbae_vector_count(&f->blocks);
     uint32_t nvalues = (uint32_t)cbae_vector_count(&f->values);
     char name[128];
-    memset(name, 0, sizeof(name));
-    strncpy(name, f->name, sizeof(name) - 1);
+    memset(name, 0, sizeof(name));                  /* the bytes after the name are part of the record: zero them */
+    snprintf(name, sizeof name, "%s", f->name);      /* terminates always; strncpy did not (audit A-011) */
 
     if (!WPUT(&w, magic) || !WPUT(&w, version) || !WPUT(&w, f->entry_addr) ||
         !wbuf_write(&w, name, sizeof(name)) ||

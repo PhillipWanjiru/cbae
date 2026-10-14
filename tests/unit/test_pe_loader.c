@@ -121,9 +121,11 @@ static void build_pe(void) {
     *(uint16_t*)(imp+hn2_off)=0x010;
     strcpy((char*)(imp+hn2_off+2),"KeStallExecutionProcessor");
 
-    *(uint64_t*)(imp+ilt0_off+0)=IMP_RVA+hn0_off;
-    *(uint64_t*)(imp+ilt0_off+8)=IMP_RVA+hn1_off;
-    *(uint64_t*)(imp+ilt1_off+0)=IMP_RVA+hn2_off;
+    /* the import lookup tables are packed, so these offsets are not 8-aligned: memcpy, not a cast store */
+    const uint64_t ilt_e0=IMP_RVA+hn0_off, ilt_e1=IMP_RVA+hn1_off, ilt_e2=IMP_RVA+hn2_off;
+    memcpy(imp+ilt0_off+0,&ilt_e0,8);
+    memcpy(imp+ilt0_off+8,&ilt_e1,8);
+    memcpy(imp+ilt1_off+0,&ilt_e2,8);
     memcpy(imp+iat0_off,imp+ilt0_off,16);
     memcpy(imp+iat1_off,imp+ilt1_off,8);
 

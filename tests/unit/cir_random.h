@@ -35,7 +35,17 @@
  *   - Optional knobs, off by default so existing seeds keep their functions:
  *     barrier_pct makes calls (CALL and API_CALL, which overwrite memory) dense;
  *     reload_pct makes loads read back what recent stores wrote, through a
- *     rebuilt address, and puts a reload straight after some stores.
+ *     rebuilt address, and puts a reload straight after some stores;
+ *     const_pct makes instructions built from known values dense: arithmetic on
+ *     constants and on what earlier ones fold to (so chains form), wrap-around at
+ *     every width, shifts by 0 / 63 / 64 and by narrow counts, truncating and
+ *     widening copies, and the identities that give a constant from an unknown
+ *     value (x&0, x*0, x|-1, x^x, x-x, 0<<x), x being any value including loads,
+ *     phis and the conflated "other" register; phis then more often merge one
+ *     constant;
+ *     const_cond_pct makes branch conditions constant, directly (an i1 constant)
+ *     or through an identity (cmp&0, cmp|1, c^c, not(c^c), a truncated constant),
+ *     so that some branches have a side that never runs.
  *   - Sums of up to eleven operands (more atoms than the analysis keeps) and
  *     loop-header phis carrying every kind of recurrence (x+c, x*k, x<<c, -x,
  *     x+y, x+x, copies), so that both the term caps and the redundant-phi
@@ -70,15 +80,22 @@
  *     static analysis makes must also hold for such a prefix.
  *   - Using a value before its definition aborts: the generator is
  *     supposed to make that impossible.
+ *   - CIR does not say how a value narrower than 64 bits is extended when it
+ *     feeds a 64-bit operation or phi. By default it is zero-extended;
+ *     cirx_hooks_t.sign_ext runs the same function with every operand and phi
+ *     incoming sign-extended from its own width instead. An analysis that claims
+ *     something about a mixed-width operation must be right under both.
  *   Hooks report each definition, each memory access, each load's
- *   per-byte last writer, each byte a call clobbers, and, before every
- *   non-phi instruction, which instructions are the last writer of some byte.
+ *   per-byte last writer, each byte a call clobbers, each block entered (and
+ *   the block control came from), and, before every non-phi instruction, which
+ *   instructions are the last writer of some byte.
  */
 #ifndef CBAE_TEST_CIR_RANDOM_H
 #define CBAE_TEST_CIR_RANDOM_H
 
 #include "cir/cir_builder.h"
 #include "cir/cir_verifier.h"
+#include "dataflow/ssa_verifier.h"
 #include "platform/memory.h"
 #include <assert.h>
 #include <stdbool.h>
@@ -86,6 +103,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* A test that builds functions but never runs them does not call the interpreter. */
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-function"
+#endif
 
 /* ── Small PRNG ──────────────────────────────────────────────────────── */
 
@@ -145,6 +168,13 @@ typedef struct cirg_params {
                                          * with the same decomposition), and a STORE is
                                          * followed at once by a reload with a third of it:
                                          * the spill/reload shape real code is full of    */
+    uint32_t const_pct;                 /* 0 (default): the usual mix. Otherwise each
+                                         * instruction is, with this chance, built from
+                                         * known values or one of the identities that
+                                         * give a constant (see the file comment)        */
+    uint32_t const_cond_pct;            /* 0 (default): branch conditions are comparisons.
+                                         * Otherwise, with this chance, a branch condition
+                                         * is constant (directly or through an identity)  */
 } cirg_params_t;
 
 /* One address expression, remembered so it can be built again. */
@@ -197,6 +227,12 @@ typedef struct cirg {
 
     uint32_t              barrier_pct;
     uint32_t              reload_pct;
+    uint32_t              const_pct;
+    uint32_t              const_cond_pct;
+    cirg_defs_t           kconsts;                    /* every constant, by class (incl. i1 ones when const knobs are on) */
+    cirg_defs_t           kdefs[CIRG_MAX_BLOCKS];     /* const-flavoured results and constant phis, by block */
+    cbae_cir_value_t     *kzero[CIRG_NCLASS];         /* 0 and all-ones of each class (const knobs only)      */
+    cbae_cir_value_t     *kones[CIRG_NCLASS];
     cirg_recipe_t         stored[4];                  /* the last few STOREs' addresses, newest at nstored-1 */
     uint8_t               stored_cls[4];              /* and the class of the value each stored            */
     uint32_t              nstored;
@@ -467,9 +503,169 @@ static bool cirg_emit_cancel_pair(cirg_t *g, uint32_t b) {
     return true;
 }
 
+/* ── Constant-flavoured code (const_pct, const_cond_pct) ─────────────── */
+
+/* A known value of class `c` at block `b`: usually the result of an earlier
+ * constant-flavoured instruction whose block dominates b (so chains form),
+ * otherwise a constant. Never NULL: every class has constants. */
+static cbae_cir_value_t *cirg_known(cirg_t *g, uint32_t b, cirg_class_t c) {
+    cbae_cir_value_t *chosen = NULL;
+    uint32_t seen = 0;
+    if (cirr_pct(&g->rng, 65)) {
+        for (uint32_t d = 0; d < g->nblocks; d++)
+            if ((g->dom[b] >> d) & 1u) cirg_reservoir(g, &g->kdefs[d], c, &chosen, &seen);
+        if (chosen) return chosen;
+    }
+    seen = 0;
+    cirg_reservoir(g, &g->kconsts, c, &chosen, &seen);
+    assert(chosen);
+    return chosen;
+}
+
+/* Emit and remember as "known": a later constant-flavoured instruction may build on it. */
+static cbae_cir_value_t *cirg_kbin(cirg_t *g, uint32_t b, cbae_cir_opcode_t op, cbae_cir_value_t *x,
+                                   cbae_cir_value_t *y, cirg_class_t rc) {
+    assert(x && y);
+    cbae_cir_value_t *r = cirg_def_binop(g, b, op, x, y, cirg_type_of(rc));
+    cirg_add_def(&g->kdefs[b], r, rc);
+    return r;
+}
+
+static cbae_cir_value_t *cirg_kun(cirg_t *g, uint32_t b, cbae_cir_opcode_t op, cbae_cir_value_t *x,
+                                  cirg_class_t rc) {
+    assert(x);
+    cbae_cir_value_t *r = cirg_def_unop(g, b, op, x, cirg_type_of(rc));
+    cirg_add_def(&g->kdefs[b], r, rc);
+    return r;
+}
+
+/* Any class: i64 `i64_pct` percent of the time, else one of i32/i16/i8/i1. */
+static cirg_class_t cirg_any_class(cirg_t *g, uint32_t i64_pct) {
+    return cirr_pct(&g->rng, i64_pct) ? CIRG_I64 : (cirg_class_t)(CIRG_I32 + cirr_below(&g->rng, 4));
+}
+
+/* A value of class `c` that is not necessarily known: any available one; an i64 if there is none. */
+static cbae_cir_value_t *cirg_any_of(cirg_t *g, uint32_t b, cirg_class_t *c) {
+    cbae_cir_value_t *x = *c == CIRG_I64 ? NULL : cirg_pick(g, b, *c);
+    if (!x) { *c = CIRG_I64; x = cirg_i64(g, b); }
+    return x;
+}
+
+static void cirg_emit_const_flavoured(cirg_t *g, uint32_t b) {
+    cirr_rng_t *rng = &g->rng;
+    static const cbae_cir_opcode_t ARITH[6] = { CIR_OP_ADD, CIR_OP_SUB, CIR_OP_MUL,
+                                                CIR_OP_AND, CIR_OP_OR,  CIR_OP_XOR };
+    static const cbae_cir_opcode_t SHIFT[3] = { CIR_OP_SHL, CIR_OP_SHR, CIR_OP_SAR };
+    const uint32_t r = cirr_below(rng, 100);
+
+    if (r < 22) {                              /* arithmetic on known values of one width */
+        const cirg_class_t c = cirg_any_class(g, 62);
+        const cbae_cir_opcode_t op = ARITH[cirr_below(rng, 6)];
+        cbae_cir_value_t *x = cirg_known(g, b, c);
+        cbae_cir_value_t *y = cirg_known(g, b, c);
+        cirg_kbin(g, b, op, x, y, c);
+    } else if (r < 32) {                       /* not / neg / copy; the result may be narrower or wider */
+        static const cbae_cir_opcode_t U[3] = { CIR_OP_NOT, CIR_OP_NEG, CIR_OP_COPY };
+        const cirg_class_t xc = cirg_any_class(g, 70);
+        const cirg_class_t rc = cirr_pct(rng, 60) ? xc : (cirg_class_t)cirr_below(rng, CIRG_NCLASS);
+        const cbae_cir_opcode_t op = U[cirr_below(rng, 3)];
+        cirg_kun(g, b, op, cirg_known(g, b, xc), rc);
+    } else if (r < 46) {                       /* shifts: mostly 64-bit, counts known or not, wide or narrow */
+        const cbae_cir_opcode_t op = SHIFT[cirr_below(rng, 3)];
+        const cirg_class_t vc = cirr_pct(rng, 88) ? CIRG_I64 : (cirg_class_t)(CIRG_I32 + cirr_below(rng, 3));
+        const cirg_class_t rc = cirr_pct(rng, 88) ? CIRG_I64 : (cirg_class_t)(CIRG_I32 + cirr_below(rng, 3));
+        cbae_cir_value_t *x = cirg_known(g, b, vc);
+        const uint32_t q = cirr_below(rng, 100);
+        cbae_cir_value_t *n;
+        if (q < 55)      n = cirg_known(g, b, CIRG_I64);
+        else if (q < 72) n = cirg_known(g, b, CIRG_I8);
+        else if (q < 76) n = cirg_known(g, b, CIRG_I1);
+        else if (q < 82) n = cirg_known(g, b, CIRG_I32);
+        else             n = g->shift_counts[cirr_below(rng, CIRG_KSHIFT_N)];
+        cirg_kbin(g, b, op, x, n, rc);
+    } else if (r < 62) {                       /* x op annihilator: x & 0, x * 0, x | -1, either order */
+        cirg_class_t xc = cirg_any_class(g, 60);
+        cbae_cir_value_t *x = cirg_any_of(g, b, &xc);
+        const cirg_class_t kc = cirr_pct(rng, 85) ? xc : CIRG_I64;
+        const cirg_class_t rc = cirr_pct(rng, 80) ? xc : (cirg_class_t)cirr_below(rng, CIRG_NCLASS);
+        const uint32_t which = cirr_below(rng, 3);
+        const bool swap = cirr_pct(rng, 50);
+        cbae_cir_value_t *k = which == 2 ? g->kones[kc] : g->kzero[kc];
+        const cbae_cir_opcode_t op = which == 0 ? CIR_OP_AND : which == 1 ? CIR_OP_MUL : CIR_OP_OR;
+        cirg_kbin(g, b, op, swap ? k : x, swap ? x : k, rc);
+    } else if (r < 74) {                       /* x ^ x and x - x, x anything (including "other", loads, phis) */
+        cirg_class_t xc = cirg_any_class(g, 65);
+        cbae_cir_value_t *x = cirg_any_of(g, b, &xc);
+        const cirg_class_t rc = cirr_pct(rng, 85) ? xc : (cirg_class_t)cirr_below(rng, CIRG_NCLASS);
+        const uint32_t w = cirr_below(rng, 10);        /* x^x and x-x are 0; the others are not */
+        const cbae_cir_opcode_t op = w < 4 ? CIR_OP_XOR : w < 7 ? CIR_OP_SUB : w == 7 ? CIR_OP_AND
+                                   : w == 8 ? CIR_OP_OR : CIR_OP_ADD;
+        cirg_kbin(g, b, op, x, x, rc);
+    } else if (r < 80) {                       /* a zero shifted by anything; anything shifted by zero */
+        const cbae_cir_opcode_t op = SHIFT[cirr_below(rng, 3)];
+        const bool zero_first = cirr_pct(rng, 70);
+        cbae_cir_value_t *x = cirg_i64(g, b);
+        cirg_kbin(g, b, op, zero_first ? g->kzero[CIRG_I64] : x, zero_first ? x : g->kzero[CIRG_I64], CIRG_I64);
+    } else if (r < 90) {                       /* mixed widths: only the low bits may decide, or nothing folds */
+        const cirg_class_t xc = cirg_any_class(g, 50), yc = cirg_any_class(g, 50);
+        const cirg_class_t rc = (cirg_class_t)cirr_below(rng, CIRG_NCLASS);
+        const cbae_cir_opcode_t op = ARITH[cirr_below(rng, 6)];
+        cbae_cir_value_t *x = cirg_known(g, b, xc);
+        cbae_cir_value_t *y = cirg_known(g, b, yc);
+        cirg_kbin(g, b, op, x, y, rc);
+    } else {                                   /* i1 logic: constant when an identity says so */
+        cbae_cir_value_t *c = cirg_pick(g, b, CIRG_I1);
+        if (!c) {
+            cbae_cir_value_t *x = cirg_i64(g, b);
+            cbae_cir_value_t *y = cirg_i64(g, b);
+            c = cirg_def_binop(g, b, CIR_OP_CMP, x, y, cir_type_i1());
+        }
+        switch (cirr_below(rng, 6)) {
+            case 0:  cirg_kbin(g, b, CIR_OP_AND, c, g->kzero[CIRG_I1], CIRG_I1); break;   /* 0       */
+            case 1:  cirg_kbin(g, b, CIR_OP_OR,  g->kones[CIRG_I1], c, CIRG_I1); break;   /* 1       */
+            case 2:  cirg_kbin(g, b, CIR_OP_XOR, c, g->kones[CIRG_I1], CIRG_I1); break;   /* not c   */
+            case 3:  cirg_kbin(g, b, CIR_OP_AND, c, g->kones[CIRG_I1], CIRG_I1); break;   /* c       */
+            case 4:  cirg_kbin(g, b, CIR_OP_OR,  c, g->kzero[CIRG_I1], CIRG_I1); break;   /* c       */
+            default: cirg_kun(g, b, CIR_OP_NOT, cirg_known(g, b, CIRG_I1), CIRG_I1); break;
+        }
+    }
+}
+
+/* A branch condition that is constant, directly or by an identity. */
+static cbae_cir_value_t *cirg_const_cond(cirg_t *g, uint32_t b) {
+    cirr_rng_t *rng = &g->rng;
+    cbae_cir_value_t *cmp = cirg_pick(g, b, CIRG_I1);
+    if (!cmp) {
+        cbae_cir_value_t *x = cirg_i64(g, b);
+        cbae_cir_value_t *y = cirg_i64(g, b);
+        cmp = cirg_def_binop(g, b, CIR_OP_CMP, x, y, cir_type_i1());
+    }
+    const uint32_t r = cirr_below(rng, 100);
+    if (r < 22) return cirr_pct(rng, 50) ? g->kones[CIRG_I1] : g->kzero[CIRG_I1];
+    if (r < 36) return cirg_kbin(g, b, CIR_OP_AND, cmp, g->kzero[CIRG_I1], CIRG_I1);
+    if (r < 50) return cirg_kbin(g, b, CIR_OP_OR, g->kones[CIRG_I1], cmp, CIRG_I1);
+    if (r < 60) return cirg_kbin(g, b, CIR_OP_XOR, cmp, cmp, CIRG_I1);
+    if (r < 68) return cirg_kbin(g, b, CIR_OP_SUB, cmp, cmp, CIRG_I1);
+    if (r < 78) {
+        cbae_cir_value_t *z = cirg_kbin(g, b, CIR_OP_XOR, cmp, cmp, CIRG_I1);
+        return cirg_kun(g, b, CIR_OP_NOT, z, CIRG_I1);
+    }
+    if (r < 86) return cirg_kun(g, b, CIR_OP_COPY, cirg_known(g, b, CIRG_I64), CIRG_I1);
+    if (r < 93) return cirg_kun(g, b, CIR_OP_NEG, cirg_known(g, b, CIRG_I1), CIRG_I1);
+    return cirg_kbin(g, b, CIR_OP_AND, cmp, cirg_known(g, b, CIRG_I1), CIRG_I1);
+}
+
 static void cirg_emit_random(cirg_t *g, uint32_t b) {
     cirr_rng_t *rng = &g->rng;
     const cbae_cir_type_t t64 = cir_type_i(64);
+
+    /* Optional extra density of instructions built from known values. Skipped
+     * (and no random number drawn) when const_pct is 0, so existing seeds are
+     * unchanged. */
+    if (g->const_pct && cirr_pct(rng, g->const_pct)) {
+        cirg_emit_const_flavoured(g, b);
+        return;
+    }
 
     /* Optional extra density of memory-clobbering instructions. Skipped (and no
      * random number drawn) when barrier_pct is 0, so existing seeds are unchanged. */
@@ -656,22 +852,26 @@ static bool cirg_has_back_pred(const cirg_t *g, uint32_t b) {
 /** Three sizes, chosen by seed so a run of consecutive seeds covers them all. */
 static cirg_params_t cirg_params_for_seed(uint64_t seed) {
     static const cirg_params_t P[3] = {
-        { 2,  6,  6, 35, 0, 0 },
-        { 5, 14,  8, 30, 0, 0 },
-        { 12, 32, 10, 22, 0, 0 },
+        { 2,  6,  6, 35, 0, 0, 0, 0 },
+        { 5, 14,  8, 30, 0, 0, 0, 0 },
+        { 12, 32, 10, 22, 0, 0, 0, 0 },
     };
     return P[seed % 3];
 }
 
 /** Build one random valid-SSA function from `seed`. Returns false only if
  *  the arena or builder failed (never expected). On success the function
- *  has passed the structural verifier. Release with cirg_free(). */
+ *  has passed the SSA verifier (structure and dominance), which the generator
+ *  is therefore tested against by every run of every test that uses it.
+ *  Release with cirg_free(). */
 static bool cirg_build(cirg_t **out, uint64_t seed, const cirg_params_t *p) {
     cirg_t *g = calloc(1, sizeof *g);
     if (!g) return false;
     g->rng.s = seed * 0x2545F4914F6CDD1Dull + 0x1234567ull;
-    g->barrier_pct = p->barrier_pct;
-    g->reload_pct  = p->reload_pct;
+    g->barrier_pct    = p->barrier_pct;
+    g->reload_pct     = p->reload_pct;
+    g->const_pct      = p->const_pct;
+    g->const_cond_pct = p->const_cond_pct;
     cirr_rng_t *rng = &g->rng;
 
     if (cbae_arena_init(&g->arena, 8u * 1024 * 1024) != CBAE_OK) { free(g); return false; }
@@ -697,17 +897,36 @@ static bool cirg_build(cirg_t **out, uint64_t seed, const cirg_params_t *p) {
     for (uint32_t i = 0; i < CIRG_KCONST_N; i++) {
         g->consts[i] = cbae_cir_const(&g->bld, cir_type_i(64), CIRG_KCONST[i]);
         cirg_add_def(&g->globals, g->consts[i], CIRG_I64);
+        cirg_add_def(&g->kconsts, g->consts[i], CIRG_I64);
     }
     static const struct { cirg_class_t c; int64_t v; } narrow[] = {
         { CIRG_I32, -1 }, { CIRG_I32, 0x7FFFFFFF }, { CIRG_I32, 0x80000000ll }, { CIRG_I32, 0x100000008ll },
         { CIRG_I16, -1 }, { CIRG_I16, 0x1234 },     { CIRG_I16, 70000 },
         { CIRG_I8, -1 },  { CIRG_I8, 0x7F },        { CIRG_I8, 200 },
     };
-    for (size_t i = 0; i < sizeof narrow / sizeof narrow[0]; i++)
-        cirg_add_def(&g->globals,
-                     cbae_cir_const(&g->bld, cirg_type_of(narrow[i].c), narrow[i].v), narrow[i].c);
+    for (size_t i = 0; i < sizeof narrow / sizeof narrow[0]; i++) {
+        cbae_cir_value_t *k = cbae_cir_const(&g->bld, cirg_type_of(narrow[i].c), narrow[i].v);
+        cirg_add_def(&g->globals, k, narrow[i].c);
+        cirg_add_def(&g->kconsts, k, narrow[i].c);
+    }
     for (uint32_t i = 0; i < CIRG_KSHIFT_N; i++)
         g->shift_counts[i] = cbae_cir_const(&g->bld, cir_type_i(64), CIRG_KSHIFT[i]);
+
+    /* Extra constants for the constant-flavoured knobs: zero and all-ones of every
+     * class (the identities' annihilators), i1 constants, and byte-sized shift counts.
+     * Created only when a knob is on, so the value numbering of other seeds is unchanged. */
+    if (g->const_pct || g->const_cond_pct) {
+        for (int c = 0; c < CIRG_NCLASS; c++) {
+            const cbae_cir_type_t ty = cirg_type_of((cirg_class_t)c);
+            g->kzero[c] = cbae_cir_const(&g->bld, ty, 0);
+            g->kones[c] = cbae_cir_const(&g->bld, ty, c == CIRG_I1 ? 1 : -1);
+            cirg_add_def(&g->kconsts, g->kzero[c], (cirg_class_t)c);
+            cirg_add_def(&g->kconsts, g->kones[c], (cirg_class_t)c);
+        }
+        static const int64_t bytes[] = { 0, 3, 63, 64, 0x83 };
+        for (size_t i = 0; i < sizeof bytes / sizeof bytes[0]; i++)
+            cirg_add_def(&g->kconsts, cbae_cir_const(&g->bld, cir_type_i(8), bytes[i]), CIRG_I8);
+    }
 
     for (uint32_t b = 0; b < g->nblocks; b++) {
         cbae_cir_builder_init(&g->bld, g->f, g->blk[b]);
@@ -722,14 +941,18 @@ static bool cirg_build(cirg_t **out, uint64_t seed, const cirg_params_t *p) {
             cbae_cir_value_t *ph = cbae_cir_phi_create(g->f, g->blk[b], cirg_type_of(pc));
             assert(ph);
             g->phi[b][k]      = ph;
-            g->phi_main[b][k] = cirr_pct(rng, 15) ? g->other
-                              : cirr_pct(rng, 60) ? g->params[cirr_below(rng, 8)] : cirg_const(g);
+            /* With const_pct, phis lean toward merging constants. */
+            g->phi_main[b][k] = cirr_pct(rng, g->const_pct ? 8 : 15) ? g->other
+                              : cirr_pct(rng, g->const_pct ? 30 : 60) ? g->params[cirr_below(rng, 8)]
+                              : cirg_const(g);
             if (cirg_has_back_pred(g, b) && cirr_pct(rng, 55)) {
                 const uint32_t q = cirr_below(rng, 100);
                 g->phi_rec[b][k] = (uint8_t)(q < 40 ? 1 : q < 50 ? 2 : q < 58 ? 3 : q < 64 ? 4 :
                                              q < 78 ? 5 : q < 86 ? 6 : q < 92 ? 7 : 8);
             }
             cirg_add_def(&g->defs[b], ph, pc);
+            if (g->const_pct && g->phi_main[b][k]->kind == CIR_VAL_CONST)
+                cirg_add_def(&g->kdefs[b], ph, pc);              /* likely a constant: later code builds on it */
             if (g->phi_main[b][k] == g->other && g->nconflated < 16) {
                 g->conflated[g->nconflated]     = ph;
                 g->conflated_blk[g->nconflated] = b;
@@ -772,7 +995,9 @@ static bool cirg_build(cirg_t **out, uint64_t seed, const cirg_params_t *p) {
         } else if (g->nsucc[b] == 1) {
             cbae_cir_jump(&g->bld, g->blk[g->succ[b][0]], 0);
         } else {
-            cbae_cir_value_t *cond = cirr_pct(rng, 50) ? cirg_pick(g, b, CIRG_I1) : NULL;
+            cbae_cir_value_t *cond = NULL;
+            if (g->const_cond_pct && cirr_pct(rng, g->const_cond_pct)) cond = cirg_const_cond(g, b);
+            if (!cond) cond = cirr_pct(rng, 50) ? cirg_pick(g, b, CIRG_I1) : NULL;
             if (!cond)
                 cond = cirg_def_binop(g, b, CIR_OP_CMP, cirg_i64(g, b), cirg_i64(g, b), cir_type_i1());
             cbae_cir_branch(&g->bld, cond, g->blk[g->succ[b][0]], g->blk[g->succ[b][1]], 0);
@@ -788,8 +1013,10 @@ static bool cirg_build(cirg_t **out, uint64_t seed, const cirg_params_t *p) {
                 const uint32_t r = cirr_below(rng, 100);
                 if (g->induct_in[b][k][P])                              val = g->induct_in[b][k][P];
                 else if (g->phi_main[b][k] == g->other && r < 90)       val = g->other;
-                else if (r < 35)                                        val = g->phi_main[b][k];
-                else if (r < 55 && ((g->dom[P] >> b) & 1u))             val = g->phi[b][k];
+                else if (r < (g->const_pct ? 48u : 35u))                val = g->phi_main[b][k];
+                else if (r < (g->const_pct ? 58u : 55u) && ((g->dom[P] >> b) & 1u))
+                                                                        val = g->phi[b][k];
+                else if (g->const_pct && r < 80)                        val = cirg_known(g, P, cirg_any_class(g, 85));
                 else                                                    val = cirg_opnd(g, P);
                 assert(val);
                 const cbae_err_t rc = cbae_cir_phi_add_incoming(g->f, g->phi[b][k]->u.def_insn, val, P);
@@ -797,7 +1024,7 @@ static bool cirg_build(cirg_t **out, uint64_t seed, const cirg_params_t *p) {
                 (void)rc;
             }
 
-    const cbae_cir_verify_result_t vr = cbae_cir_verify_function(g->f);
+    const cbae_cir_verify_result_t vr = cbae_ssa_verify_function(g->f);      /* structure AND dominance */
     if (!vr.ok) {
         fprintf(stderr, "cirg_build: seed %llu produced invalid CIR: %s\n",
                 (unsigned long long)seed, vr.message);
@@ -851,6 +1078,12 @@ typedef struct cirx_hooks {
      *  it has f->next_insn_id entries. */
     void (*on_step)(void *user, const cbae_cir_instruction_t *insn,
                     const uint32_t *live_bytes, uint64_t step);
+    /** Control entered block `block_id` from block `from` (UINT32_MAX for the entry
+     *  block), before the block's phis are evaluated. */
+    void (*on_block)(void *user, uint32_t block_id, uint32_t from, uint64_t step);
+    /** Read every operand and phi incoming narrower than 64 bits sign-extended from its
+     *  own width instead of zero-extended (see the file comment). Default: false. */
+    bool sign_ext;
 } cirx_hooks_t;
 
 typedef struct { uint64_t steps; bool returned; } cirx_result_t;
@@ -954,16 +1187,28 @@ typedef struct {
     uint8_t    *def;
     uint8_t    *vol;      /* the "other" register: every READ may see a different value */
     cirr_rng_t *rng;
+    bool        sx;       /* read narrow values sign-extended instead of zero-extended   */
 } cirx_state_t;
+
+/* The low `bits` bits of `v`, sign-extended to 64. */
+static inline uint64_t cirx_sext(uint64_t v, unsigned bits) {
+    if (bits == 0 || bits >= 64) return v;
+    const uint64_t s = 1ull << (bits - 1);
+    return ((v & ((s << 1) - 1ull)) ^ s) - s;
+}
 
 /* The lifter maps every narrow register to the one parameter "other", so a
  * single SSA value stands for many different run-time values. The most
  * hostile reading is that each read of it is an unrelated number. */
 static inline uint64_t cirx_get(const cirx_state_t *s, const cbae_cir_value_t *v) {
-    if (v->kind == CIR_VAL_CONST) return (uint64_t)v->u.const_val & cirx_mask(v->type);
-    assert(s->def[v->id] && "use of a value before its definition");
-    if (s->vol[v->id]) return CIRR_POOL[cirr_below(s->rng, CIRR_POOL_N)];
-    return s->val[v->id];
+    uint64_t x;
+    if (v->kind == CIR_VAL_CONST) {
+        x = (uint64_t)v->u.const_val & cirx_mask(v->type);
+    } else {
+        assert(s->def[v->id] && "use of a value before its definition");
+        x = s->vol[v->id] ? CIRR_POOL[cirr_below(s->rng, CIRR_POOL_N)] : s->val[v->id];
+    }
+    return s->sx ? cirx_sext(x, cir_type_bits(v->type)) : x;
 }
 
 /** Run `f` from its entry block. `seed` fixes the initial registers, the
@@ -976,7 +1221,7 @@ static void cirx_run(const cbae_cir_function_t *f, uint64_t seed, uint64_t max_s
     uint8_t  *vol = calloc(nvals ? nvals : 1, 1);
     assert(val && def && vol);
     cirr_rng_t rng = { .s = seed ^ 0xC0FFEEull };
-    const cirx_state_t state = { val, def, vol, &rng };
+    const cirx_state_t state = { val, def, vol, &rng, hk && hk->sign_ext };
     cirx_mem_t mem;
     cirx_mem_init(&mem, seed, f->next_insn_id);
 
@@ -1000,6 +1245,7 @@ static void cirx_run(const cbae_cir_function_t *f, uint64_t seed, uint64_t max_s
 
     while (!returned && steps < max_steps) {
         const cbae_cir_block_t *blk = *(cbae_cir_block_t **)cbae_vector_at(&f->blocks, cur);
+        if (hk && hk->on_block) hk->on_block(hk->user, cur, prev, steps);
 
         /* Phis: a parallel copy from the edge just taken. */
         uint32_t ip = 0;
@@ -1136,5 +1382,9 @@ static void cirx_run(const cbae_cir_function_t *f, uint64_t seed, uint64_t max_s
     free(def);
     free(vol);
 }
+
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
 
 #endif /* CBAE_TEST_CIR_RANDOM_H */

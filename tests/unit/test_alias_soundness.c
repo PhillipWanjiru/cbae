@@ -437,7 +437,8 @@ static void forge(const fctx_t *fx, int kind, view_t *v, uint8_t **own_u8, cbae_
             cbae_addr_info_t *f = malloc((fx->nvals ? fx->nvals : 1) * sizeof *f);
             assert(f);
             memcpy(f, fx->form, (fx->nvals ? fx->nvals : 1) * sizeof *f);
-            for (uint32_t i = 0; i < fx->nvals; i++) f[i].offset += 1;
+            for (uint32_t i = 0; i < fx->nvals; i++)                  /* wraps at INT64_MAX: unsigned add */
+                f[i].offset = (int64_t)((uint64_t)f[i].offset + 1u);
             *own_form = f;
             v->form = f;
             break;
