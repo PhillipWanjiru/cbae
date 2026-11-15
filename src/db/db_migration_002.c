@@ -1,0 +1,88 @@
+/**
+ * @file db_migration_002.c
+ * @brief Migration 002 — Phase 2 schema: sections, symbols, imports,
+ *        relocations, loader_results.
+ */
+#include "db/db_schema.h"
+#include "db/db_connection.h"
+#include "platform/logging.h"
+
+static const char S_DDL[] =
+"CREATE TABLE IF NOT EXISTS sections ("
+"  id           INTEGER PRIMARY KEY AUTOINCREMENT,"
+"  binary_id    INTEGER NOT NULL REFERENCES binaries(id) ON DELETE CASCADE,"
+"  section_idx  INTEGER NOT NULL,"
+"  name         TEXT    NOT NULL,"
+"  virt_addr    INTEGER NOT NULL,"
+"  virt_size    INTEGER NOT NULL,"
+"  file_offset  INTEGER NOT NULL,"
+"  file_size    INTEGER NOT NULL,"
+"  flags        INTEGER NOT NULL"
+");"
+"CREATE INDEX IF NOT EXISTS idx_sections_binary ON sections(binary_id);"
+"CREATE INDEX IF NOT EXISTS idx_sections_va ON sections(binary_id, virt_addr);"
+"CREATE TABLE IF NOT EXISTS symbols ("
+"  id           INTEGER PRIMARY KEY AUTOINCREMENT,"
+"  binary_id    INTEGER NOT NULL REFERENCES binaries(id) ON DELETE CASCADE,"
+"  name         TEXT    NOT NULL,"
+"  source       TEXT    NOT NULL DEFAULT '',"
+"  address      INTEGER,"
+"  size_bytes   INTEGER NOT NULL DEFAULT 0,"
+"  sym_type     INTEGER NOT NULL DEFAULT 0,"
+"  binding      INTEGER NOT NULL DEFAULT 0,"
+"  kind         INTEGER NOT NULL DEFAULT 0,"
+"  section_idx  INTEGER NOT NULL DEFAULT 0,"
+"  api_recognized INTEGER NOT NULL DEFAULT 0"
+");"
+"CREATE INDEX IF NOT EXISTS idx_symbols_binary  ON symbols(binary_id);"
+"CREATE INDEX IF NOT EXISTS idx_symbols_address ON symbols(binary_id, address) WHERE address IS NOT NULL;"
+"CREATE INDEX IF NOT EXISTS idx_symbols_name    ON symbols(name);"
+"CREATE TABLE IF NOT EXISTS imports ("
+"  id           INTEGER PRIMARY KEY AUTOINCREMENT,"
+"  binary_id    INTEGER NOT NULL REFERENCES binaries(id) ON DELETE CASCADE,"
+"  name         TEXT    NOT NULL,"
+"  module       TEXT    NOT NULL,"
+"  iat_va       INTEGER,"
+"  rela_offset  INTEGER,"
+"  rela_type    INTEGER NOT NULL DEFAULT 0,"
+"  hint         INTEGER NOT NULL DEFAULT 0,"
+"  ordinal      INTEGER NOT NULL DEFAULT 0,"
+"  state        INTEGER NOT NULL DEFAULT 0,"
+"  api_matched  INTEGER NOT NULL DEFAULT 0"
+");"
+"CREATE INDEX IF NOT EXISTS idx_imports_binary ON imports(binary_id);"
+"CREATE INDEX IF NOT EXISTS idx_imports_iat    ON imports(iat_va) WHERE iat_va IS NOT NULL;"
+"CREATE INDEX IF NOT EXISTS idx_imports_name   ON imports(name);"
+"CREATE TABLE IF NOT EXISTS relocations ("
+"  id              INTEGER PRIMARY KEY AUTOINCREMENT,"
+"  binary_id       INTEGER NOT NULL REFERENCES binaries(id) ON DELETE CASCADE,"
+"  target_va       INTEGER NOT NULL,"
+"  file_offset     INTEGER NOT NULL,"
+"  reloc_type      INTEGER NOT NULL DEFAULT 0,"
+"  addend          INTEGER NOT NULL DEFAULT 0,"
+"  sym_index       INTEGER NOT NULL DEFAULT 0,"
+"  page_rva        INTEGER NOT NULL DEFAULT 0,"
+"  refs_import     INTEGER NOT NULL DEFAULT 0,"
+"  applied         INTEGER NOT NULL DEFAULT 0"
+");"
+"CREATE INDEX IF NOT EXISTS idx_relocs_binary ON relocations(binary_id);"
+"CREATE TABLE IF NOT EXISTS loader_results ("
+"  id             INTEGER PRIMARY KEY AUTOINCREMENT,"
+"  binary_id      INTEGER NOT NULL REFERENCES binaries(id) ON DELETE CASCADE,"
+"  loaded_at      INTEGER NOT NULL DEFAULT (strftime('%s','now')),"
+"  section_count  INTEGER NOT NULL DEFAULT 0,"
+"  symbol_count   INTEGER NOT NULL DEFAULT 0,"
+"  import_count   INTEGER NOT NULL DEFAULT 0,"
+"  reloc_count    INTEGER NOT NULL DEFAULT 0,"
+"  load_time_ms   INTEGER NOT NULL DEFAULT 0,"
+"  error_msg      TEXT"
+");"
+"CREATE UNIQUE INDEX IF NOT EXISTS idx_loader_results_binary ON loader_results(binary_id);";
+
+cbae_err_t cbae_db_migration_002(cbae_db_t *db) {
+    LOG_INFO("Running migration 002 — Phase 2 loader schema");
+    int rc = cbae_db_exec(db, S_DDL);
+    if(rc != SQLITE_OK) CBAE_RETURN_ERR(CBAE_ERR_DB, "migration 002 DDL failed (rc=%d)", rc);
+    LOG_INFO("Migration 002 complete");
+    return CBAE_OK;
+}
