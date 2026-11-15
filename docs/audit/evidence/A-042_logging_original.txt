@@ -1,0 +1,111 @@
+A-042  logger (src/platform/logging.c, include/platform/logging.h): the Phase 1 implementation, measured
+=========================================================================================================
+
+How this was produced: the new tests/unit/test_logging.c (13 groups) and the demonstration program
+A-042_demo.c in this directory were compiled against the ORIGINAL logger (the Phase 1 sources, kept untouched
+in a separate tree) and against the rewritten one.
+
+1. The new test, one group per process, against the original logger
+-------------------------------------------------------------------
+Most groups stop first at the frame check, because the original writes the local time without zone or
+milliseconds ("2026-11-09T23:52:07") where the documented line has "2026-11-09T20:52:07.864Z". The defects
+themselves are shown in section 2 and 3.
+
+  PASS  test_silent_until_init_and_after_shutdown
+tests/unit/test_logging.c:446: test_levels: Assertion `f.count == (size_t)(5 - min)' failed.
+  FAIL  test_levels  (signal 6)
+tests/unit/test_logging.c:343: check_text: Assertion `l.n > 27 && l.p[0] == '[' && l.p[25] == ']' && l.p[26] == ' '' failed.
+  FAIL  test_frames_and_macros  (signal 6)
+tests/unit/test_logging.c:326: check_ts: Assertion `c == '.'' failed.
+  FAIL  test_timestamp_is_utc  (signal 6)
+tests/unit/test_logging.c:343: check_text: Assertion `l.n > 27 && l.p[0] == '[' && l.p[25] == ']' && l.p[26] == ' '' failed.
+  FAIL  test_hostile_text  (signal 6)
+tests/unit/test_logging.c:637: test_random_text: Assertion `f.count == (size_t)count' failed.
+  FAIL  test_random_text  (signal 6)
+tests/unit/test_logging.c:343: check_text: Assertion `l.n > 27 && l.p[0] == '[' && l.p[25] == ']' && l.p[26] == ' '' failed.
+  FAIL  test_limits  (signal 6)
+  FAIL  test_missing_arguments  (signal 11)
+tests/unit/test_logging.c:343: check_text: Assertion `l.n > 27 && l.p[0] == '[' && l.p[25] == ']' && l.p[26] == ' '' failed.
+  FAIL  test_unformattable  (signal 6)
+tests/unit/test_logging.c:787: test_sinks: Assertion `f.count == 2' failed.
+  FAIL  test_sinks  (signal 6)
+tests/unit/test_logging.c:841: test_restart_closes_files: Assertion `count_fds() == before + 1' failed.
+  FAIL  test_restart_closes_files  (signal 6)
+tests/unit/test_logging.c:901: test_threads: Assertion `read_writer_line(f.line[k], &w, &i)' failed.
+  FAIL  test_threads  (signal 6)
+Fatal glibc error: pthread_mutex_lock.c:94 (___pthread_mutex_lock): assertion failed: mutex->__data.__owner == 0
+  FAIL  test_restart_while_logging  (signal 6)
+12 of 13 failed
+
+(The one group that passes, "nothing is written before cbae_log_init or after cbae_log_shutdown", describes
+behaviour the original already had. On the rewritten logger all 13 groups pass.)
+
+2. The defects, one by one (A-042_demo.c)
+-----------------------------------------
+######## base logger
+-- a message that contains a newline and a forged line, into a text file; the file, made visible with cat -v:
+[2026-11-09T23:58:19] INFO  demo.c:15 (main)  section .text
+[2026-01-01T00:00:00] ERROR  loader/pe_loader.c:1 (cbae_pe_load)  signature check FAILED for ntoskrnl.exe^[[2J
+-- the same idea in JSON mode; every line of the file through a JSON parser:
+ line 1 : NOT JSON  -> JSONDecodeError   b'{"ts":"2026-11-09T23:58:19","level":"INFO","file":"demo.c","line":18,"func":"main","msg":"expor'
+ line 2 : NOT JSON  -> JSONDecodeError   b'{"ts":"x","level":"ERROR","file":"f","line":1,"func":"f","msg":"forged"}"}'
+-- 40 restarts (cbae_log_init) and one shutdown:
+ open descriptors after 40 restarts and a shutdown: 39 more than before
+-- a NULL format string:
+/bin/bash: line 134:  6405 Segmentation fault      ./demo_$v null 2>&1
+  exit status 139
+-- a message at level NONE:
+ [2026-11-09T23:58:19] ?  f.c:1 (fn)  a message at level NONE
+-- a log file that cannot be opened (/nonexistent-dir/x.log), what appears on stderr:
+ [2026-11-09T23:58:19] INFO  demo.c:37 (main)  where does this go?
+######## new logger
+-- a message that contains a newline and a forged line, into a text file; the file, made visible with cat -v:
+[2026-11-09T20:58:19.398Z] INFO  demo.c:15 (main)  section .text\x0a[2026-01-01T00:00:00] ERROR  loader/pe_loader.c:1 (cbae_pe_load)  signature check FAILED for ntoskrnl.exe\x1b[2J
+-- the same idea in JSON mode; every line of the file through a JSON parser:
+ line 1 : valid JSON
+-- 40 restarts (cbae_log_init) and one shutdown:
+ open descriptors after 40 restarts and a shutdown: 0 more than before
+-- a NULL format string:
+ survived a NULL format
+  exit status 0
+-- a message at level NONE:
+ (nothing written)
+-- a log file that cannot be opened (/nonexistent-dir/x.log), what appears on stderr:
+ [2026-11-09T20:58:19.428Z] WARN  src/platform/logging.c:135 (cbae_log_init)  cannot open log file '/nonexistent-dir/x.log': No such file or directory; logging to stderr
+ [2026-11-09T20:58:19.428Z] INFO  demo.c:37 (main)  where does this go?
+
+3. ThreadSanitizer on the original, test groups of section 1 (init and shutdown while other threads log)
+--------------------------------------------------------------------------------------------------------
+The original initialises its mutex inside cbae_log_init and destroys it inside cbae_log_shutdown, and reads the
+level and the sink without any lock:
+      6 unlock of an unlocked mutex (or by a wrong thread) src/platform/logging.c:64 in cbae_log_write_v
+      3 destroy of a locked mutex src/platform/logging.c:42 in cbae_log_shutdown
+      3 data race src/platform/logging.c:35 in cbae_log_init
+      2 data race src/platform/logging.c:42 in cbae_log_shutdown
+      2 data race src/platform/logging.c:41 in cbae_log_shutdown
+      2 data race src/platform/logging.c:40 in cbae_log_shutdown
+      2 data race libio/genops.c:331 in __GI__IO_setb
+      1 use of an invalid mutex (e.g. uninitialized or destroyed) src/platform/logging.c:64 in cbae_log_write_v
+      1 double lock of a mutex src/platform/logging.c:56 in cbae_log_write_v
+      1 data race src/platform/logging.c:56 in cbae_log_write_v
+      1 data race src/platform/logging.c:48 in cbae_log_write_v
+      1 data race src/platform/logging.c:36 in cbae_log_init
+      1 data race src/platform/logging.c:34 in cbae_log_init
+      1 data race src/platform/logging.c:33 in cbae_log_init
+      1 data race src/platform/logging.c:32 in cbae_log_init
+      1 data race libio/libioP.h:958 in _IO_deallocate_file
+      1 SEGV ../../../../src/libsanitizer/sanitizer_common/sanitizer_libc.cpp:176 in __sanitizer::internal_strlen(char const*)
+
+(on the rewritten logger the same test is clean under TSan: see docs/audit/LEDGER.md, A-042)
+
+4. What changed
+---------------
+ - the mutex is statically initialised and never destroyed; the level and the format are atomics; the sink is
+   swapped under the lock; init and shutdown may run while other threads log
+ - every message is built into a local buffer, then written whole under the lock, and flushed
+ - names and messages taken from a binary cannot start a second line, break the JSON or drive a terminal
+   (header table); bytes that are not UTF-8 are replaced, not copied
+ - UTC time stamps with milliseconds and a Z
+ - an unopenable log file is reported on stderr (at WARN) instead of silently replaced by stderr
+ - NULL file, function or format are tolerated; a message at level NONE (or outside the enum) is never written
+ - a restart closes the previous file

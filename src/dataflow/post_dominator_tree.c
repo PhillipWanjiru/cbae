@@ -98,28 +98,37 @@ static cbae_err_t link_sink_sccs(uint32_t n, const dom_csr_t *fwd,
 
 /* ── Public API ───────────────────────────────────────────────────────── */
 
+/* What a query answers for a block that is not in the tree: no children. All zero is an empty vector. */
+static const cbae_vector_t NO_BLOCKS;
+
 cbae_err_t cbae_pdom_tree_build(const cbae_cir_function_t *func,
                                  cbae_arena_t *arena, cbae_pdom_tree_t *out) {
-    if (!func || !arena || !out)
+    if (!out) CBAE_RETURN_ERR(CBAE_ERR_INVALID, "post-dominator tree: null argument");
+    memset(out, 0, sizeof(*out));
+    if (!func || !arena)
         CBAE_RETURN_ERR(CBAE_ERR_INVALID, "post-dominator tree: null argument");
 
-    memset(out, 0, sizeof(*out));
-    out->func = func;
-    const uint32_t n = (uint32_t)cbae_vector_count(&func->blocks);
-    if (n == 0)
+    const size_t count = cbae_vector_count(&func->blocks);
+    if (count == 0)
         CBAE_RETURN_ERR(CBAE_ERR_INVALID, "post-dominator tree: function has no blocks");
+    if (count > DOM_MAX_NODES)
+        CBAE_RETURN_ERR(CBAE_ERR_OVERFLOW, "post-dominator tree: %zu blocks, more than the %u it takes", count, DOM_MAX_NODES);
+    const uint32_t n = (uint32_t)count;
     const uint32_t total = n + 1;          /* real blocks + the virtual exit */
     const uint32_t vexit = n;
-    out->block_count = n;
 
-    out->ipdom      = CBAE_ARENA_ALLOC_N(arena, uint32_t, total);
-    out->rpo_order  = CBAE_ARENA_ALLOC_N(arena, uint32_t, total);
-    out->rpo_number = CBAE_ARENA_ALLOC_N(arena, uint32_t, total);
-    out->dt_enter   = CBAE_ARENA_ALLOC_N(arena, uint32_t, total);
-    out->dt_exit    = CBAE_ARENA_ALLOC_N(arena, uint32_t, total);
-    out->children   = CBAE_ARENA_ALLOC_N(arena, cbae_vector_t, total);
-    if (!out->ipdom || !out->rpo_order || !out->rpo_number ||
-        !out->dt_enter || !out->dt_exit || !out->children)
+    /* The tree is built in `t` and handed over whole: whatever step fails, *out stays empty. */
+    cbae_pdom_tree_t t;
+    memset(&t, 0, sizeof(t));
+    t.func        = func;
+    t.block_count = n;
+    t.ipdom       = CBAE_ARENA_ALLOC_N(arena, uint32_t, total);
+    t.rpo_order   = CBAE_ARENA_ALLOC_N(arena, uint32_t, total);
+    t.rpo_number  = CBAE_ARENA_ALLOC_N(arena, uint32_t, total);
+    t.dt_enter    = CBAE_ARENA_ALLOC_N(arena, uint32_t, total);
+    t.dt_exit     = CBAE_ARENA_ALLOC_N(arena, uint32_t, total);
+    t.children    = CBAE_ARENA_ALLOC_N(arena, cbae_vector_t, total);
+    if (!t.ipdom || !t.rpo_order || !t.rpo_number || !t.dt_enter || !t.dt_exit || !t.children)
         CBAE_RETURN_ERR(CBAE_ERR_OOM, "post-dominator tree: array alloc failed");
 
     /* Step 1: the REVERSED CFG as an edge list. CFG edge u->w becomes
@@ -130,8 +139,9 @@ cbae_err_t cbae_pdom_tree_build(const cbae_cir_function_t *func,
         const cbae_cir_block_t *blk = *(cbae_cir_block_t **)cbae_vector_at(&func->blocks, b);
         ncfg += blk->successor_count;
     }
-    uint32_t *rf = malloc(sizeof(uint32_t) * (ncfg + n));
-    uint32_t *rt = malloc(sizeof(uint32_t) * (ncfg + n));
+    const size_t edge_room = (size_t)ncfg + n;
+    uint32_t *rf = malloc(sizeof(uint32_t) * edge_room);
+    uint32_t *rt = malloc(sizeof(uint32_t) * edge_room);
     bool *to_vexit  = calloc(n, sizeof(bool));
     bool *reaches  = calloc(n, sizeof(bool));
     if (!rf || !rt || !to_vexit || !reaches) {
@@ -181,41 +191,49 @@ cbae_err_t cbae_pdom_tree_build(const cbae_cir_function_t *func,
     free(rf); free(rt); free(to_vexit); free(reaches);
     CBAE_CHECK(rc);
 
-    dom_graph_t g = { total, vexit, rev.succ_off, rev.succ_adj,
-                      rev.pred_off, rev.pred_adj };
-    rc = dom_core_compute(&g, "post-dominator tree",
-                          out->ipdom, out->rpo_order, out->rpo_number);
+    const dom_graph_t g = { total, vexit, rev.succ_off, rev.succ_adj,
+                            rev.pred_off, rev.pred_adj };
+    rc = dom_core_compute(&g, "post-dominator tree", t.ipdom, t.rpo_order, t.rpo_number);
     dom_csr_free(&rev);
     CBAE_CHECK(rc);
 
-    CBAE_CHECK(dom_core_build_children(total, vexit, out->ipdom, out->children));
-    dom_core_number_tree(total, vexit, out->children, out->dt_enter, out->dt_exit);
+    CBAE_CHECK(dom_core_build_children(total, vexit, t.ipdom, t.children));
+    rc = dom_core_number_tree(total, vexit, t.children, t.dt_enter, t.dt_exit);
+    if (rc != CBAE_OK) {
+        for (uint32_t i = 0; i < total; i++) cbae_vector_destroy(&t.children[i]);
+        return rc;
+    }
 
+    *out = t;
     LOG_DEBUG("post-dominator tree built: %u blocks + virtual exit", n);
     return CBAE_OK;
 }
 
 void cbae_pdom_tree_destroy(cbae_pdom_tree_t *pt) {
-    if (!pt || !pt->children) return;
+    if (!pt || pt->block_count == 0) return;                /* nothing to release in an empty tree */
     for (uint32_t i = 0; i <= pt->block_count; i++)
         cbae_vector_destroy(&pt->children[i]);
 }
 
 uint32_t cbae_pdom_tree_ipdom(const cbae_pdom_tree_t *pt, uint32_t block_id) {
-    uint32_t p = pt->ipdom[block_id];
+    if (!pt || block_id >= pt->block_count) return CBAE_PDOM_NONE;
+    const uint32_t p = pt->ipdom[block_id];
     return p == pt->block_count ? CBAE_PDOM_EXIT : p;
 }
 
 bool cbae_pdom_tree_post_dominates(const cbae_pdom_tree_t *pt,
                                     uint32_t a, uint32_t b) {
+    if (!pt || a >= pt->block_count || b >= pt->block_count) return false;
     return pt->dt_enter[a] <= pt->dt_enter[b] && pt->dt_exit[b] <= pt->dt_exit[a];
 }
 
 const cbae_vector_t *cbae_pdom_tree_children(const cbae_pdom_tree_t *pt,
                                               uint32_t block_id) {
+    if (!pt || block_id >= pt->block_count) return &NO_BLOCKS;
     return &pt->children[block_id];
 }
 
 const cbae_vector_t *cbae_pdom_tree_exit_children(const cbae_pdom_tree_t *pt) {
+    if (!pt || pt->block_count == 0) return &NO_BLOCKS;
     return &pt->children[pt->block_count];
 }

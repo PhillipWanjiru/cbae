@@ -18,10 +18,15 @@ struct cbae_engine {
 
 cbae_err_t cbae_engine_init(const char *config_path, cbae_engine_t **out) {
     if(!out) CBAE_RETURN_ERR(CBAE_ERR_INVALID, "out_engine is NULL");
+    *out = NULL;
     cbae_engine_t *e = calloc(1, sizeof(*e));
     if(!e) CBAE_RETURN_ERR(CBAE_ERR_OOM, "failed to allocate engine");
 
-    cbae_err_t err = cbae_config_load(config_path, &e->config);
+    /* No path: the defaults. A path that cannot be loaded is an error (a misspelt --config must not
+     * silently run an analysis with settings nobody chose). */
+    cbae_err_t err = CBAE_OK;
+    if(config_path) err = cbae_config_load(config_path, &e->config);
+    else            cbae_config_defaults(&e->config);
     if(err != CBAE_OK) { free(e); return err; }
 
     cbae_log_init((cbae_log_level_t)e->config.log_level,

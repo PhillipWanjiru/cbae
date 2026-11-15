@@ -34,6 +34,9 @@
 extern "C" {
 #endif
 
+/** Returned by cbae_dom_tree_idom() for a block id that is not in the tree. */
+#define CBAE_DOM_NONE UINT32_MAX
+
 typedef struct cbae_dom_tree {
     const cbae_cir_function_t *func;   /* borrowed                          */
     uint32_t   block_count;
@@ -53,19 +56,27 @@ typedef struct cbae_dom_tree {
 
 /** Build the dominator tree for `func`. Arrays are arena-allocated;
  * the `children` vectors are heap-backed and must be released via
- * cbae_dom_tree_destroy(). */
+ * cbae_dom_tree_destroy().
+ *
+ * Errors: CBAE_ERR_INVALID for a NULL argument, a function with no blocks, or a block the entry cannot reach (it has no
+ * dominator); CBAE_ERR_OVERFLOW for more blocks than the code takes (about 536 million); CBAE_ERR_OOM when the heap or
+ * the arena is out of memory. On ANY error `*out` is all zero (when `out` is not NULL): an empty tree that
+ * cbae_dom_tree_destroy() accepts and every query below answers "no such block" for. Memory taken from the arena before
+ * the error stays in it, like any arena allocation. */
 cbae_err_t cbae_dom_tree_build(const cbae_cir_function_t *func,
                                 cbae_arena_t *arena, cbae_dom_tree_t *out);
 
 /** Release the heap-backed children vectors. Does not touch the arena
- * (idom/rpo/enter/exit arrays are arena-owned). */
+ * (idom/rpo/enter/exit arrays are arena-owned). Safe on an empty tree and on one already destroyed. */
 void cbae_dom_tree_destroy(cbae_dom_tree_t *dt);
 
 /** Immediate dominator of `block_id` (returns block_id itself for the
- * entry block, matching the algorithm's own idom[entry]=entry fact). */
+ * entry block, matching the algorithm's own idom[entry]=entry fact).
+ * CBAE_DOM_NONE if `block_id` is not a block of the tree. */
 uint32_t cbae_dom_tree_idom(const cbae_dom_tree_t *dt, uint32_t block_id);
 
-/** True if `a` dominates `b`, INCLUSIVE (every block dominates itself). */
+/** True if `a` dominates `b`, INCLUSIVE (every block dominates itself).
+ * False if either is not a block of the tree. */
 bool cbae_dom_tree_dominates(const cbae_dom_tree_t *dt, uint32_t a, uint32_t b);
 
 /** True if `a` strictly dominates `b` (dominates AND a != b). */
@@ -75,7 +86,7 @@ static inline bool cbae_dom_tree_strictly_dominates(const cbae_dom_tree_t *dt,
 }
 
 /** Children of `block_id` in the dominator tree. Never NULL (may be
- * an empty vector for a leaf). */
+ * an empty vector for a leaf, and is one for a block that is not in the tree). */
 const cbae_vector_t *cbae_dom_tree_children(const cbae_dom_tree_t *dt,
                                              uint32_t block_id);
 
@@ -88,10 +99,17 @@ typedef struct cbae_dom_frontier {
 } cbae_dom_frontier_t;
 
 /** Compute the dominance frontier of every block from an already-built
- * dominator tree. */
+ * dominator tree. The sets are in the order the blocks were found, which is
+ * increasing block id.
+ *
+ * Errors: CBAE_ERR_INVALID for a NULL argument, an empty tree (one that failed to build or was never built), or a tree
+ * whose function has since gained or lost blocks; CBAE_ERR_OOM when the heap is out of memory. On ANY error `*out` is all
+ * zero: an empty frontier that cbae_dom_frontier_destroy() accepts and cbae_dom_frontier_of() answers with an empty set. */
 cbae_err_t cbae_dom_frontier_compute(const cbae_dom_tree_t *dt,
                                       cbae_dom_frontier_t *out);
+/** Release the sets and leave `*df` empty. Safe on an empty frontier and on one already destroyed. */
 void cbae_dom_frontier_destroy(cbae_dom_frontier_t *df);
+/** The frontier of `block_id`. Never NULL: an empty set for a block that is not in the frontier structure. */
 const cbae_vector_t *cbae_dom_frontier_of(const cbae_dom_frontier_t *df,
                                            uint32_t block_id);
 

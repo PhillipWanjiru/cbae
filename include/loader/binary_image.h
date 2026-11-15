@@ -50,15 +50,19 @@ typedef struct cbae_elf_meta {
     uint32_t abi_crc;
 } cbae_elf_meta_t;
 
+#define CBAE_IMAGE_NOTES_MAX 16
+#define CBAE_IMAGE_NOTE_LEN  160
+
 typedef struct cbae_binary_image {
     char                  path[512];
     char                  sha256[65];
     cbae_binary_format_t  format;
     cbae_binary_arch_t    arch;
     cbae_os_t             os_origin;
+    /** The sample's bytes: one heap block of exactly file_size bytes, owned by the image (see
+     *  cbae_image_adopt_file); NULL for an image assembled by hand. Section data pointers point into it. */
     const uint8_t        *file_data;
     cbae_size_t           file_size;
-    int                   mmap_fd;
     cbae_addr_t           load_base;
     cbae_addr_t           entry_point;
     cbae_section_t       *sections;
@@ -80,12 +84,44 @@ typedef struct cbae_binary_image {
         cbae_elf_meta_t elf;
     } meta;
     int64_t db_id;
+
+    /** What the loader noticed and dealt with instead of failing: a table cut short by the end of the
+     *  file, a name that did not fit its field, sections that overlap. The first CBAE_IMAGE_NOTES_MAX
+     *  are kept (text in notes[]); note_count counts all of them, so note_count > CBAE_IMAGE_NOTES_MAX
+     *  means some were dropped. A clean file has none. */
+    uint32_t              note_count;
+    char                  notes[CBAE_IMAGE_NOTES_MAX][CBAE_IMAGE_NOTE_LEN];
 } cbae_binary_image_t;
 
+/**
+ * Creates an empty image whose arena holds exactly @p arena_size bytes (0: 8 MiB, for images that are
+ * assembled by hand). On any failure everything made so far is released and *out is NULL.
+ */
 cbae_err_t      cbae_image_create       (cbae_size_t arena_size,
                                           cbae_binary_image_t **out);
+
+/**
+ * Builds the lookup tables (VA -> section, VA -> symbol, name -> symbol, IAT slot -> import). Safe to
+ * call again. When several symbols have the same address or the same name, the one that is resolved,
+ * then the one that is exported or global, then the first in table order, is the one that is found.
+ * Section and file symbols (CBAE_SYM_SECTION, CBAE_SYM_FILE) are left out of the address and name
+ * indexes: they stand for a section or a source file, not for something a lookup should name.
+ * An allocation failure is returned, never skipped: a half-built index would make lookups lie.
+ */
 cbae_err_t      cbae_image_build_indexes(cbae_binary_image_t *img);
+
+/** Frees the image and everything it owns, including the sample's bytes. NULL and *img == NULL are fine. */
 void            cbae_image_destroy      (cbae_binary_image_t **img);
+
+/**
+ * Gives the image the sample's bytes and fills in img->sha256. @p data must be a heap block from
+ * malloc of exactly @p size bytes: the image owns it from now on and frees it in cbae_image_destroy.
+ * (cbae_file_read returns such a block.) Any earlier bytes are freed.
+ */
+void            cbae_image_adopt_file   (cbae_binary_image_t *img, uint8_t *data, size_t size);
+
+/** Records one thing the loader noticed (printf-style; the text is cut to CBAE_IMAGE_NOTE_LEN - 1). */
+void            cbae_image_note         (cbae_binary_image_t *img, const char *fmt, ...) CBAE_PRINTF_FORMAT(2, 3);
 
 cbae_section_t *cbae_image_section_at_va   (const cbae_binary_image_t *img,
                                              cbae_addr_t va);
@@ -93,6 +129,7 @@ cbae_section_t *cbae_image_section_by_name (const cbae_binary_image_t *img,
                                              const char *name);
 const uint8_t  *cbae_image_va_to_ptr       (const cbae_binary_image_t *img,
                                              cbae_addr_t va);
+/** The address of the byte at file offset @p offset, or CBAE_ADDR_INVALID if no loaded section holds it. */
 cbae_addr_t     cbae_image_offset_to_va    (const cbae_binary_image_t *img,
                                              cbae_off_t offset);
 

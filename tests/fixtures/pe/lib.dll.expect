@@ -1,0 +1,35 @@
+# lib.dll: made by make_expect.py (pefile 2024.8.26; counts agree with llvm-readobj)
+pe 34404 4 8226 0 6442450944 20480 1024 0 2 320 16 3072
+dir 0 8224 149
+dir 1 8373 40
+dir 2 0 0
+dir 3 16384 12
+dir 4 0 0
+dir 5 0 0
+dir 6 8196 28
+dir 7 0 0
+dir 8 0 0
+dir 9 0 0
+dir 10 0 0
+dir 11 0 0
+dir 12 8440 24
+dir 13 0 0
+dir 14 0 0
+dir 15 0 0
+sec 0 74 4096 512 1024 1610612768 .text
+sec 1 328 8192 512 1536 1073741888 .rdata
+sec 2 4 12288 512 2048 3221225536 .data
+sec 3 12 16384 512 2560 1073741888 .pdata
+imp 0 8440 0 N 558 KERNEL32.dll GetProcAddress
+imp 0 8440 1 N 676 KERNEL32.dll GetTickCount
+exp 7 5 4 lib.dll
+enm 0 1 add
+enm 1 2 exported_data
+enm 2 3 forwarded
+enm 3 4 uptime
+eat 0 4160 -
+eat 1 4128 -
+eat 2 12288 -
+eat 3 8351 KERNEL32.GetTickCount
+eat 4 4096 -
+dbg 16 0 0 0

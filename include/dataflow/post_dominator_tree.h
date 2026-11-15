@@ -56,6 +56,10 @@ extern "C" {
  *  is the virtual exit rather than a real block. */
 #define CBAE_PDOM_EXIT UINT32_MAX
 
+/** Returned by cbae_pdom_tree_ipdom() for a block id that is not in the tree (so it cannot be mistaken for the
+ *  virtual exit, nor for a block). */
+#define CBAE_PDOM_NONE (UINT32_MAX - 1u)
+
 typedef struct cbae_pdom_tree {
     const cbae_cir_function_t *func;    /* borrowed                          */
     uint32_t   block_count;             /* REAL blocks. Node `block_count`
@@ -79,18 +83,24 @@ typedef struct cbae_pdom_tree {
 /** Build the post-dominator tree of `func`. Arrays are arena-allocated;
  * the `children` vectors are heap-backed and released by
  * cbae_pdom_tree_destroy(). Blocks unreachable from the function entry
- * are tolerated (post-dominance does not depend on the entry). */
+ * are tolerated (post-dominance does not depend on the entry).
+ *
+ * Errors: CBAE_ERR_INVALID for a NULL argument or a function with no blocks; CBAE_ERR_OVERFLOW for more blocks than the
+ * code takes (about 536 million); CBAE_ERR_OOM when the heap or the arena is out of memory. On ANY error `*out` is all
+ * zero (when `out` is not NULL): an empty tree that cbae_pdom_tree_destroy() accepts and every query below answers
+ * "no such block" for. */
 cbae_err_t cbae_pdom_tree_build(const cbae_cir_function_t *func,
                                  cbae_arena_t *arena, cbae_pdom_tree_t *out);
 
+/** Release the heap-backed children vectors. Safe on an empty tree and on one already destroyed. */
 void cbae_pdom_tree_destroy(cbae_pdom_tree_t *pt);
 
 /** Immediate post-dominator of real block `block_id`: another real
- *  block's id, or CBAE_PDOM_EXIT. */
+ *  block's id, or CBAE_PDOM_EXIT. CBAE_PDOM_NONE if `block_id` is not a real block of the tree. */
 uint32_t cbae_pdom_tree_ipdom(const cbae_pdom_tree_t *pt, uint32_t block_id);
 
 /** True if real block `a` post-dominates real block `b`, INCLUSIVE
- *  (every block post-dominates itself). */
+ *  (every block post-dominates itself). False if either is not a real block of the tree. */
 bool cbae_pdom_tree_post_dominates(const cbae_pdom_tree_t *pt,
                                     uint32_t a, uint32_t b);
 
@@ -101,12 +111,12 @@ static inline bool cbae_pdom_tree_strictly_post_dominates(
 }
 
 /** Blocks whose immediate post-dominator is real block `block_id`.
- *  Never NULL (an empty vector for a leaf). */
+ *  Never NULL (an empty vector for a leaf, and for a block that is not in the tree). */
 const cbae_vector_t *cbae_pdom_tree_children(const cbae_pdom_tree_t *pt,
                                               uint32_t block_id);
 
 /** Blocks whose immediate post-dominator is the virtual exit -- the tree
- *  roots. Never NULL, never empty for a valid function. */
+ *  roots. Never NULL; never empty for a tree that was built (an empty vector for an empty tree). */
 const cbae_vector_t *cbae_pdom_tree_exit_children(const cbae_pdom_tree_t *pt);
 
 #ifdef __cplusplus

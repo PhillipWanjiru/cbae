@@ -1,0 +1,8 @@
+KILLED   Q08 prepare: a NULL statement text is passed on (the message differs only)  <- test_db_persistence: test_db_persistence: /home/claude/mutsnap2/cbae/tests/unit/test_db_persistence.c:198: expect_msg: Assertion `strstr(cbae_last_error(), part)  (0s)
+KILLED   Q32 bind_text: the text is not copied  <- test_db_persistence: test_db_persistence: /home/claude/mutsnap2/cbae/tests/unit/test_db_persistence.c:766: test_bind: Assertion `scalar(&db, "SELECT v = 'before'  (0s)
+KILLED   Q33 bind_blob: the data is not copied  <- test_db_persistence: test_db_persistence: /home/claude/mutsnap2/cbae/tests/unit/test_db_persistence.c:771: test_bind: Assertion `scalar(&db, "SELECT hex(v) = '09  (0s)
+SURVIVED Q34 columns: a column that does not exist is not refused (equivalent: SQLite answers NULL itself)  (4s)
+SURVIVED Q35 columns: a column beyond the last is not refused (equivalent: SQLite answers NULL itself)  (4s)
+SURVIVED Q36 columns: a NULL statement is not refused (equivalent: SQLite answers NULL itself)  (4s)
+
+killed 3, survived/failed 3: Q34 Q35 Q36

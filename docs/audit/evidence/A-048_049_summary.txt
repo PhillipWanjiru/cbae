@@ -1,0 +1,22 @@
+A-048 / A-049 (dominator tree, post-dominator tree, dominance frontier, and the SSA verifier's dominance step):
+out-of-memory handling, contracts, limits.
+
+Failing first, on the unmodified Phase 5 code (the *_baseline_* files in this directory):
+  - an allocation failure was reported with -2 but left a half-built tree in the caller's output (tree, frontier and
+    post-dominator tree alike);
+  - null arguments and block ids outside the tree were not handled by the contract.
+After the fix both new test programs pass: tests/unit/test_dominance_oom.c (25760 runs with one allocation or one arena
+byte short, each ending in a clean error with an empty output or the same tree as without failures, none swallowed, no
+leak) and tests/unit/test_dominance_contracts.c.
+
+What changed (src/dataflow/): dom_csr_build and the tree builders refuse more than DOM_MAX_NODES (2^29 - 1) nodes with
+CBAE_ERR_OVERFLOW; the trees are built in a local value and handed over whole; dom_core_number_tree validates the tree it is
+given (a child that does not exist, a node with two parents, a cycle, a node the root does not reach: CBAE_ERR_INVALID);
+queries are bounds-safe (CBAE_DOM_NONE, CBAE_PDOM_NONE, CBAE_PDOM_EXIT); the frontier walk stops at a block already
+recorded for the current join (the walk would only repeat).
+
+Frontier cost, a chain of K blocks that all jump to one join (A-048_049_bench_frontier.txt):
+  K = 20000   frontier 396.98 ms -> 0.58 ms, identical results.
+  The tree build itself is still quadratic on this shape (955 ms at K = 20000). Recorded for Checkpoint 5.
+
+Mutation campaigns for this code: not yet run (see docs/HANDOFF.md).

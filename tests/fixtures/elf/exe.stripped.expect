@@ -1,0 +1,10 @@
+# exe.stripped: made by make_expect.py (pyelftools 0.33, readelf agrees on counts)
+elf 2 62 4198480 8 0
+sec 0 0 0 0 0 0 0 0 0 0 -
+sec 1 7 2 4194760 456 32 8 0 0 0 .note.gnu.property
+sec 2 1 6 4198400 4096 113 16 0 0 0 .text
+sec 3 1 2 4202496 8192 32 32 0 0 0 .rodata
+sec 4 1 2 4202528 8224 84 8 0 0 0 .eh_frame
+sec 5 8 3 4206592 12288 64 32 0 0 0 .bss
+sec 6 1 48 0 8308 45 1 1 0 0 .comment
+sec 7 3 0 0 8353 68 1 0 0 0 .shstrtab

@@ -1,0 +1,27 @@
+# lib.stripped.so: made by make_expect.py (pyelftools 0.33, readelf agrees on counts)
+elf 3 62 0 19 0
+sec 0 0 0 0 0 0 0 0 0 0 -
+sec 1 1879048182 2 624 624 52 8 0 2 0 .gnu.hash
+sec 2 11 2 680 680 192 8 24 3 1 .dynsym
+sec 3 3 2 872 872 84 1 0 0 0 .dynstr
+sec 4 4 2 960 960 120 8 24 2 0 .rela.dyn
+sec 5 4 66 1080 1080 24 8 24 2 14 .rela.plt
+sec 6 1 6 4096 4096 32 16 16 0 0 .plt
+sec 7 1 6 4128 4128 16 16 16 0 0 .plt.sec
+sec 8 1 6 4144 4144 79 16 0 0 0 .text
+sec 9 7 2 8192 8192 32 8 0 0 0 .note.gnu.property
+sec 10 1 2 8224 8224 44 4 0 0 0 .eh_frame_hdr
+sec 11 1 2 8272 8272 132 8 0 0 0 .eh_frame
+sec 12 6 3 16032 11936 304 8 16 3 0 .dynamic
+sec 13 1 3 16336 12240 24 8 8 0 0 .got
+sec 14 1 3 16360 12264 32 8 8 0 0 .got.plt
+sec 15 1 3 16400 12304 28 16 0 0 0 .data
+sec 16 8 3 16428 12332 4 4 0 0 0 .bss
+sec 17 1 48 0 12332 45 1 1 0 0 .comment
+sec 18 3 0 0 12377 158 1 0 0 0 .shstrtab
+rel 4 0 16336 1 6 0
+rel 4 1 16344 4 6 0
+rel 4 2 16352 3 6 0
+rel 4 3 16400 2 1 0
+rel 4 4 16416 2 1 0
+rel 5 0 16384 2 7 0

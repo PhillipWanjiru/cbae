@@ -1,0 +1,98 @@
+Hostile blobs (deserializer):
+  a wrong magic number                                                                   refused (PARSE)
+  version 0                                                                              refused (PARSE)
+  a version from the future                                                              refused (PARSE)
+  0xFFFFFFFF blocks declared, none of the bytes for them                                 refused (PARSE)
+  0x10000000 blocks declared                                                             refused (PARSE)
+  0xFFFFFFFF values declared                                                             refused (PARSE)
+  0x10000000 values declared                                                             refused (PARSE)
+  one more block declared than present                                                   refused (PARSE)
+  one more value declared than present                                                   refused (PARSE)
+  one value too few declared                                                             refused (PARSE)
+  one block too few declared                                                             refused (PARSE)
+  a name with no terminator                                                              refused (PARSE)
+  bytes after the name's terminator                                                      refused (PARSE)
+  value kind 0 (invalid)                                                                 refused (PARSE)
+  value kind 5                                                                           refused (PARSE)
+  value kind 255                                                                         refused (PARSE)
+  type kind 7                                                                            refused (PARSE)
+  type kind 255                                                                          refused (PARSE)
+  a gap in the value ids                                                                 refused (PARSE)
+  a duplicate value id                                                                   refused (PARSE)
+  value ids out of order                                                                 refused (PARSE)
+  a parameter register that does not exist                                               refused (PARSE)
+  parameter register 255                                                                 refused (PARSE)
+  a placeholder register that does not exist                                             refused (PARSE)
+  a placeholder block that does not exist                                                refused (PARSE)
+  a result whose defining instruction does not exist                                     refused (PARSE)
+  a result whose defining instruction has another result                                 refused (PARSE)
+  two values defined by one instruction                                                  refused (PARSE)
+  a defining instruction id of 0xFFFFFFFF                                                refused (PARSE)
+  a block id that is not its index                                                       refused (PARSE)
+  two blocks with each other's ids                                                       refused (PARSE)
+  0xFFFFFFFF predecessors                                                                refused (PARSE)
+  a predecessor count above the list                                                     refused (PARSE)
+  a predecessor that is not a block                                                      refused (PARSE)
+  3 successors (a block has at most 2: the arrays that hold them would be overrun)       refused (PARSE)
+  0xFFFFFFFF successors                                                                  refused (PARSE)
+  a successor that is not a block                                                        refused (PARSE)
+  a successor of 0xFFFFFFFF                                                              refused (PARSE)
+  0xFFFFFFFF instructions in a block                                                     refused (PARSE)
+  one more instruction than present                                                      refused (PARSE)
+  one instruction too few declared                                                       refused (PARSE)
+  opcode 0 (invalid)                                                                     refused (PARSE)
+  opcode CIR_OP_COUNT                                                                    refused (PARSE)
+  opcode 255                                                                             refused (PARSE)
+  5 operands (the array holds 4)                                                         refused (PARSE)
+  255 operands declared                                                                  refused (PARSE)
+  an operand count that disagrees with the operands present                              refused (PARSE)
+  an operand that is not a value                                                         refused (PARSE)
+  an operand id of 0xFFFFFFFE                                                            refused (PARSE)
+  a result that is not a value                                                           refused (PARSE)
+  a result that is a parameter                                                           refused (PARSE)
+  a result that belongs to another instruction                                           refused (PARSE)
+  a name longer than the bytes left                                                      refused (PARSE)
+  a name one byte longer than present                                                    refused (PARSE)
+  a name with a NUL inside                                                               refused (PARSE)
+  a name that ends in a NUL byte                                                         refused (PARSE)
+  a branch's true target that is not a block                                             refused (PARSE)
+  a branch's false target that is not a block                                            refused (PARSE)
+  a jump to a block that does not exist                                                  refused (PARSE)
+  0xFFFFFFFF phi incoming values                                                         refused (PARSE)
+  more phi incoming values than present                                                  refused (PARSE)
+  a phi incoming value that is not a value                                               refused (PARSE)
+  a phi incoming block that does not exist                                               refused (PARSE)
+  a duplicate instruction id                                                             refused (PARSE)
+  an instruction id beyond the instruction count                                         refused (PARSE)
+  an instruction id of 0xFFFFFFFF                                                        refused (PARSE)
+  one trailing byte                                                                      refused (PARSE)
+  four trailing bytes                                                                    refused (PARSE)
+  a hundred trailing bytes                                                               refused (PARSE)
+Corrupt functions (serializer):
+  an instruction result whose defining instruction is NULL                               refused
+  a block with 3 successors                                                              refused
+  a successor that is not a block                                                        refused
+  a predecessor that is not a block                                                      refused
+  a block whose id is not its index                                                      refused
+  an instruction with 5 operands                                                         refused
+  a call target name of 65536 bytes (the length field is 16 bits)                        refused
+  opcode 0                                                                               refused
+  opcode 200                                                                             refused
+  value kind 9                                                                           refused
+  value kind 0                                                                           refused
+  type kind 40                                                                           refused
+  a value whose id is not its index                                                      refused
+  a parameter register that does not exist                                               refused
+  an operand that is not one of the function's values                                    refused
+  a result that is not one of the function's values                                      refused
+  two instructions with one id                                                           refused
+  an instruction id beyond the instruction count                                         refused
+  a branch target that is not a block                                                    refused
+  a phi incoming block that does not exist                                               refused
+  a phi incoming value that is not one of the function's values                          refused
+  a result defined by another instruction than the one it is attached to                 refused
+  an empty instruction slot                                                              refused
+  an empty value slot                                                                    refused
+  an empty block slot                                                                    refused
+  a placeholder for a block that does not exist                                          refused
+0 of 95 cases are not handled correctly

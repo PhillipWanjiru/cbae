@@ -1,0 +1,103 @@
+A-043 -- the database layer: what it did before the rewrite, and what it does now
+================================================================================
+
+Produced on the build sandbox (Ubuntu 24.04, SQLite 3.45.1, gcc 13.3) by docs/audit/evidence/A-043_demo.c, one program
+built against the original tree and against the rewritten one:
+
+  gcc -O0 -g -I<tree>/include A-043_demo.c <tree>/src/db/*.c <tree>/src/engine/cbae_error.c \
+      <tree>/src/platform/logging.c -lsqlite3 -lpthread -o demo
+
+Every line is the result of the layer's own calls; nothing is simulated. (Return codes: cbae_err_t, so -7 is CBAE_ERR_DB,
+-4 INVALID, -9 UNSUPPORTED, -10 BUSY; 5 and 26 are SQLite's own SQLITE_BUSY and SQLITE_NOTADB, which the old exec returned raw.)
+
+---- ORIGINAL (Phase 1-2 code) ---------------------------------------------------------------------------------------
+A-043 demo (old API)
+1  100 failed opens: SQLite memory still held afterwards: 136800 bytes
+2  open of a file that is not a database: rc=0 (accepted: the failure only shows at the first query)
+   its first statement: rc=26
+3  step() on a SELECT with 3 rows, five calls return: 0 0 0 0 0   (rows, end, then it starts over)
+4a prepare() of a string with no statement: rc=0, statement=NULL (and the caller is told it worked)
+4b prepare() of two INSERTs: rc=0, rows inserted: 1
+5  bind_blob with length -1: bind rc=0, step rc=0, stored length=8
+6  close with a statement not finalized, then finalize it: SQLite memory still held: 149656 bytes
+7  COMMIT that violates a deferred foreign key: rc=-7, transaction still open in SQLite: YES
+   the next begin on that connection: rc=-7 (refused: the connection is stuck)
+8  a second connection begins while the first is writing: begin rc=0, its first write rc=5 (the lock is only discovered here)
+9  4 connections x 50 transactions that read and then write: failed transactions 25 of 200, rows written 175
+10a a database from a newer program (schema v3): migrate returns 0
+10b migration 002 failing half way (a view is in the way): rc=-7, version 1, 'sections' table left behind: YES (half a migration)
+10c schema version of a closed connection: 0
+
+---- REWRITTEN --------------------------------------------------------------------------------------------------------
+A-043 demo (new API)
+1  100 failed opens: SQLite memory still held afterwards: 0 bytes
+2  open of a file that is not a database: rc=-7 (refused)
+3  step() on a SELECT with 3 rows, five calls return: 1 1 1 0 1   (rows, end, then it starts over)
+4a prepare() of a string with no statement: rc=-4, statement=NULL
+4b prepare() of two INSERTs: rc=-4, rows inserted: 0
+5  bind_blob with length -1: bind rc=-4, step rc=0, stored length=-1
+6  close with a statement not finalized, then finalize it: SQLite memory still held: 0 bytes
+7  COMMIT that violates a deferred foreign key: rc=-7, transaction still open in SQLite: no
+   the next begin on that connection: rc=0 (works)
+8  a second connection begins while the first is writing: begin rc=-10
+9  4 connections x 50 transactions that read and then write: failed transactions 0 of 200, rows written 200
+10a a database from a newer program (schema v3): migrate returns -9
+10b migration 002 failing half way (a view is in the way): rc=-7, version 1, 'sections' table left behind: no
+10c schema version of a closed connection: -4
+
+---- the out-of-bounds read of item 5, in the original, under valgrind (the same demo, valgrind -q) ------------------
+==3391== Invalid read of size 1
+==3391==    at 0x496D979: sqlite3VdbeMemSetStr (in /usr/lib/x86_64-linux-gnu/libsqlite3.so.0.8.6)
+==3391==    by 0x49675A0: ??? (in /usr/lib/x86_64-linux-gnu/libsqlite3.so.0.8.6)
+==3391==    by 0x10C324: cbae_db_bind_blob (db_query_helpers.c:39)
+==3391==    by 0x10AF57: d5_negative_blob (A-043_demo.c:106)
+==3391==    by 0x10BAFF: main (A-043_demo.c:243)
+==3391==  Address 0x4dd2f08 is 0 bytes after a block of size 8 alloc'd
+==3391==    at 0x4846828: malloc (in /usr/libexec/valgrind/vgpreload_memcheck-amd64-linux.so)
+==3391==    by 0x10AF17: d5_negative_blob (A-043_demo.c:104)
+==3391==    by 0x10BAFF: main (A-043_demo.c:243)
+
+---- findings, by function (the numbers are the demo's) ------------------------------------------------------------------
+
+cbae_db_open (db_connection.c)
+  1   a failed sqlite3_open left the connection it had allocated open (SQLite returns a handle even when it fails): 100
+      failed opens held 136,800 bytes.
+  2   the PRAGMAs ran through one sqlite3_exec whose failure was only a LOG_WARN, and their effect was never read back: a
+      journal mode that stayed "delete" (no WAL), an SQLite without foreign keys (the schema's ON DELETE CASCADE then leaves
+      orphans, silently) and a file that is not a database (rc 26 at the first statement, not at open) were all accepted.
+      Reading the code only; the demo shows the last.
+cbae_db_close
+  3   sqlite3_close's result was ignored: with a statement not finalized it answers SQLITE_BUSY, the connection stays open and
+      the pointer is cleared, so the connection is lost for good (149,656 bytes held after the statement was finalized).
+cbae_db_exec
+  4   returned SQLite's raw code (5 for busy, 26 for not-a-database) instead of a cbae_err_t, and logged at ERROR before
+      returning it, so a caller that handled the failure (a busy lock it retries) still produced an error line. Reading the code.
+cbae_db_prepare
+  5a  no check for a NULL or closed connection; an empty or comment-only string returned CBAE_OK with a NULL statement.
+  5b  a second statement in the string was ignored without a word (demo 4b: one row inserted of two).
+cbae_db_step
+  6   CBAE_OK for both a row and the end: a SELECT could not be iterated (demo 3: 0 0 0 0 0). Every failure was CBAE_ERR_DB,
+      so a busy lock could not be told from a constraint.
+cbae_db_bind_*
+  7a  bind_blob with a negative length makes SQLite read the buffer up to a terminator (valgrind above: it reads past an
+      8-byte block); SQLite documents the behaviour as undefined. bind_null ignored its result; every failure was ERR_DB.
+cbae_db_reset
+  7b  left the bound values in place (a statement reused without binding again wrote the previous row's values). Reading
+      the code; the new test shows SQLite's own behaviour that makes it matter.
+cbae_txn_begin / commit / rollback (db_transaction.c)
+  8a  BEGIN without IMMEDIATE: no lock is taken until the first write, so a second writer is told so late (demo 8) and a
+      transaction that reads and then writes fails when another commits in between, without waiting (demo 9: 141 of 200
+      transactions failed, 59 rows written of 200).
+  8b  a failed COMMIT marked the transaction inactive but left SQLite's open: the connection could never begin again (demo 7).
+  8c  a failed BEGIN left the cbae_txn_t as it was (uninitialised in the usual declaration); a rollback that failed was ignored.
+cbae_schema_migrate / cbae_schema_version (db_schema.c)
+  9a  a database whose version is newer than the program's was accepted without a word (demo 10a): an older program would
+      then write into a schema it does not know.
+  9b  a migration was not atomic: a failure half way left what it had created behind, at the old version (demo 10b).
+  9c  cbae_schema_version returned 0 when it could not read the version (demo 10c), which is the version of an empty database.
+  9d  two processes migrating one file could both run the same migration (harmless only because the DDL says IF NOT EXISTS).
+      Reading the code.
+
+Recorded, not a defect of the layer: addresses are stored in signed 64-bit INTEGER columns, so an address of 2^63 or more is
+stored as a negative number and compares and sorts as one in SQL (the C side round-trips it exactly through int64_t). The
+analyses read the columns back into uint64_t; nothing in SQL orders by address yet.

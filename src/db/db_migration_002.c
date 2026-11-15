@@ -3,8 +3,7 @@
  * @brief Migration 002 — Phase 2 schema: sections, symbols, imports,
  *        relocations, loader_results.
  */
-#include "db/db_schema.h"
-#include "db/db_connection.h"
+#include "db_migrations.h"
 #include "platform/logging.h"
 
 static const char S_DDL[] =
@@ -81,8 +80,5 @@ static const char S_DDL[] =
 
 cbae_err_t cbae_db_migration_002(cbae_db_t *db) {
     LOG_INFO("Running migration 002 — Phase 2 loader schema");
-    int rc = cbae_db_exec(db, S_DDL);
-    if(rc != SQLITE_OK) CBAE_RETURN_ERR(CBAE_ERR_DB, "migration 002 DDL failed (rc=%d)", rc);
-    LOG_INFO("Migration 002 complete");
-    return CBAE_OK;
+    return cbae_db_exec(db, S_DDL);
 }

@@ -1,0 +1,7 @@
+LIBRARY ntoskrnl.exe
+EXPORTS
+IoCreateDevice @ 1229
+IoDeleteDevice @ 1254
+ExAllocatePoolWithTag @ 1008
+ExFreePoolWithTag @ 1034
+DbgPrint @ 549

@@ -1,0 +1,31 @@
+# drv.min.sys: made by make_expect.py (pefile 2024.8.26; counts agree with llvm-readobj)
+pe 34404 5 35 15872 5368709120 16384 1024 0 1 33056 16 8192
+dir 0 0 0
+dir 1 1624 60
+dir 2 0 0
+dir 3 15360 24
+dir 4 0 0
+dir 5 0 0
+dir 6 1596 28
+dir 7 0 0
+dir 8 0 0
+dir 9 0 0
+dir 10 0 0
+dir 11 0 0
+dir 12 1760 72
+dir 13 0 0
+dir 14 0 0
+dir 15 0 0
+sec 0 92 1024 512 1024 1610612768 .text
+sec 1 464 1536 512 1536 1073741888 .rdata
+sec 2 13120 2048 5120 2048 3221225536 .data
+sec 3 24 15360 512 7168 1073741888 .pdata
+sec 4 230 15872 512 7680 1644167200 INIT
+imp 0 1760 0 N 549 ntoskrnl.exe DbgPrint
+imp 0 1760 1 N 1008 ntoskrnl.exe ExAllocatePoolWithTag
+imp 0 1760 2 N 1034 ntoskrnl.exe ExFreePoolWithTag
+imp 0 1760 3 N 1229 ntoskrnl.exe IoCreateDevice
+imp 0 1760 4 N 1254 ntoskrnl.exe IoDeleteDevice
+imp 1 1808 0 O 12 HAL.dll -
+imp 1 1808 1 N 33 HAL.dll KeStallExecutionProcessor
+dbg 16 0 0 0

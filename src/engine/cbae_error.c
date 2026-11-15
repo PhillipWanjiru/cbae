@@ -14,14 +14,24 @@ void cbae_error_clear(void) { memset(&t_ctx, 0, sizeof(t_ctx)); }
 void cbae_error_set(cbae_err_t code,
                     const char *file, int line, const char *func,
                     const char *fmt, ...) {
+    /* Format into a private buffer first. An argument may point into the context's own message - the
+     * wrapper idiom CBAE_SET_ERR(code, "while loading: %s", cbae_last_error()) does - and vsnprintf into
+     * a buffer it is also reading from is undefined behaviour (the old code produced
+     * "wrapped: wrapped: ..."). */
+    char local[CBAE_ERR_MSG_MAX];
+    local[0] = '\0';
+    if (fmt) {
+        va_list ap;
+        va_start(ap, fmt);
+        const int n = vsnprintf(local, sizeof local, fmt, ap);
+        va_end(ap);
+        if (n < 0) local[0] = '\0';
+    }
     t_ctx.code = code;
     t_ctx.file = file;
     t_ctx.line = line;
     t_ctx.func = func;
-    va_list ap;
-    va_start(ap, fmt);
-    vsnprintf(t_ctx.message, CBAE_ERR_MSG_MAX, fmt, ap);
-    va_end(ap);
+    memcpy(t_ctx.message, local, sizeof local);
 }
 
 const char *cbae_last_error(void) {

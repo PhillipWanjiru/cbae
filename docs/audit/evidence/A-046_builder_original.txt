@@ -1,0 +1,20 @@
+A-046 - CIR builder: tests/unit/test_cir_builder_hostile.c built against the ORIGINAL builder (src/cir/cir_builder.c of the Phase 4 archive), group by group.
+Built with -DCIR_BUILDER_VOID (the original returned void from store/branch/jump/return) and its own header; the first failed assertion ends a group.
+
+group script     FAILS
+    step op_block0: failure number 1 changed the function
+    test_old: tests/unit/test_cir_builder_hostile.c:289: run_script: Assertion `same_snap(&before, &after)' failed.
+group refusals   FAILS
+    test_old: tests/unit/test_cir_builder_hostile.c:361: test_refusals: Assertion `(cbae_cir_emit(b, CIR_OP_ADD, cir_type_i(64), 0, five, 5)) == NULL' failed.
+group limits     FAILS
+    test_old: tests/unit/test_cir_builder_hostile.c:462: test_counters_at_the_limit: Assertion `(cbae_cir_const(b, cir_type_i(64), 1)) == NULL' failed.
+group successors FAILS
+    test_old: tests/unit/test_cir_builder_hostile.c:338: expect_code: Assertion `rc == want' failed.
+group names      FAILS
+    test_old: tests/unit/test_cir_builder_hostile.c:544: test_call_name_is_copied: Assertion `strcmp(c->u.def_insn->call_target_name, "ExFreePoolWithTag") == 0' failed.
+group lifecycle  FAILS
+    test_old: tests/unit/test_cir_builder_hostile.c:601: create_once: Assertion `rc == CBAE_ERR_OOM && f == NULL' failed.
+group addresses  passes
+group scale      passes
+
+6 of 8 groups fail against the original builder; the 2 that pass (address lookup, scale) are the cases it was written for.

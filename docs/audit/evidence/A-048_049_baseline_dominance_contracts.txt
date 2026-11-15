@@ -1,0 +1,9 @@
+case 0: /bin/bash: line 69:   693 Aborted                 timeout 60 ../bin/test_dominance_contracts $i > /tmp/o.txt 2>&1
+rc=134 test_dominance_contracts.c:75: test_arguments: Assertion `cbae_dom_tree_build(NULL, &arena, &dt) == CBAE_ERR_INVALID && all_zero(&dt, sizeof dt)' fail
+case 1: /bin/bash: line 69:   699 Segmentation fault      timeout 60 ../bin/test_dominance_contracts $i > /tmp/o.txt 2>&1
+rc=139 
+case 2: /bin/bash: line 69:   705 Aborted                 timeout 60 ../bin/test_dominance_contracts $i > /tmp/o.txt 2>&1
+rc=134 test_dominance_contracts.c:182: test_block_ids_outside_the_tree: Assertion `cbae_dom_tree_idom(&dt, b) == CBAE_DOM_NONE' failed.
+case 3: /bin/bash: line 69:   711 Aborted                 timeout 60 ../bin/test_dominance_contracts $i > /tmp/o.txt 2>&1
+rc=134 test_dominance_contracts.c:227: test_frontier_arguments: Assertion `cbae_dom_frontier_compute(NULL, &df) == CBAE_ERR_INVALID && all_zero(&df, sizeof d
+case 4: rc=0   [PASS] a chain of 40 blocks that all lead to one join: the frontier of each is exactly {join}, of the entry and of the join empty

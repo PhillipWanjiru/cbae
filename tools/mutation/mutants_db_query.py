@@ -1,0 +1,46 @@
+"""The mutants of src/db/db_query_helpers.c: (name, text that occurs exactly once, its replacement). A name starts with its tag.
+Used by run_mut.py (set MUT_TIMEOUT=60: a mutant that hangs is killed by the timeout). The mutants that cannot be told from
+the original are marked (equivalent) and explained in docs/audit."""
+SRC = 'src/db/db_query_helpers.c'
+TESTS = ['test_db_persistence']
+
+MUTANTS = [
+ ("Q01 tail: the statement after the first is not finalized", "    sqlite3_finalize(next);\n", ""),
+ ("Q02 tail: running out of memory looks like a second statement", '    if (rc == SQLITE_NOMEM) CBAE_RETURN_ERR(CBAE_ERR_OOM, "out of memory preparing: %.120s", sql);\n', ""),
+ ("Q03 tail: a second statement that does not parse is not noticed", "if (rc != SQLITE_OK || more)", "if (more)"),
+ ("Q04 tail: a second statement that parses is not noticed", "if (rc != SQLITE_OK || more)", "if (rc != SQLITE_OK)"),
+ ("Q05 tail: a second statement is a database error", 'CBAE_RETURN_ERR(CBAE_ERR_INVALID, "more than one SQL statement', 'CBAE_RETURN_ERR(CBAE_ERR_DB, "more than one SQL statement'),
+ ("Q06 prepare: the output is not cleared", "    *out = NULL;\n    if (!db || !sql)", "    if (!db || !sql)"),
+ ("Q07 prepare: a NULL output is accepted", '    if (!out) CBAE_RETURN_ERR(CBAE_ERR_INVALID, "null statement output");\n', ""),
+ ("Q08 prepare: a NULL statement text is passed on (the message differs only)", "if (!db || !sql) CBAE_RETURN_ERR", "if (!db) CBAE_RETURN_ERR"),
+ ("Q09 prepare: a closed connection is passed on (the message differs only)", '    if (!db->handle) CBAE_RETURN_ERR(CBAE_ERR_INVALID, "the database is not open");\n', ""),
+ ("Q10 prepare: every failure is a database error", "        const cbae_err_t err = cbae_db_err_from_sqlite(rc);\n        CBAE_SET_ERR(err, \"prepare failed", "        const cbae_err_t err = CBAE_ERR_DB;\n        CBAE_SET_ERR(err, \"prepare failed"),
+ ("Q11 prepare: no statement is accepted", '    if (!st) CBAE_RETURN_ERR(CBAE_ERR_INVALID, "no SQL statement in: %.120s", sql);\n', ""),
+ ("Q12 prepare: the statement is not finalized when a second one follows", "    if (err != CBAE_OK) { sqlite3_finalize(st); return err; }", "    if (err != CBAE_OK) { return err; }"),
+ ("Q13 prepare: the statement is not handed out", "    *out = st;\n", ""),
+ ("Q14 step: a NULL statement is passed on (the message differs only)", '    if (!stmt) CBAE_RETURN_ERR(CBAE_ERR_INVALID, "null statement");\n    const int rc = sqlite3_step(stmt);', "    const int rc = sqlite3_step(stmt);"),
+ ("Q15 step: a row is not told from the end", "    if (rc == SQLITE_ROW) return CBAE_DB_ROW;", "    if (rc == SQLITE_ROW) return CBAE_OK;"),
+ ("Q16 step: the end leaves an error message behind", "    if (rc == SQLITE_DONE) return CBAE_OK;\n", ""),
+ ("Q17 step: every failure is a database error", "    const cbae_err_t err = cbae_db_err_from_sqlite(rc);\n    CBAE_SET_ERR(err, \"step: %s\"", "    const cbae_err_t err = CBAE_ERR_DB;\n    CBAE_SET_ERR(err, \"step: %s\""),
+ ("Q18 reset: a NULL statement is accepted", "    if (!s) return;\n    sqlite3_reset(s);", "    sqlite3_reset(s);"),
+ ("Q19 reset: the bindings are kept", "    sqlite3_clear_bindings(s);\n", ""),
+ ("Q20 reset: the statement is not reset", "    sqlite3_reset(s);                                   /* its result is the failure of the last step, which was reported then */\n", ""),
+ ("Q21 bind: a failed bind is a database error", "    const cbae_err_t err = cbae_db_err_from_sqlite(rc);\n    CBAE_SET_ERR(err, \"bind_%s", "    const cbae_err_t err = CBAE_ERR_DB;\n    CBAE_SET_ERR(err, \"bind_%s"),
+ ("Q22 bind: a failed bind is not reported", "    if (rc == SQLITE_OK) return CBAE_OK;\n    const cbae_err_t err = cbae_db_err_from_sqlite(rc);\n    CBAE_SET_ERR(err, \"bind_%s", "    return CBAE_OK;\n    const cbae_err_t err = cbae_db_err_from_sqlite(rc);\n    CBAE_SET_ERR(err, \"bind_%s"),
+ ("Q23 bind_int64: a NULL statement is passed on (the message differs only)", '    if (!s) CBAE_RETURN_ERR(CBAE_ERR_INVALID, "null statement");\n    return bound(sqlite3_bind_int64', "    return bound(sqlite3_bind_int64"),
+ ("Q24 bind_double: a NULL statement is passed on (the message differs only)", '    if (!s) CBAE_RETURN_ERR(CBAE_ERR_INVALID, "null statement");\n    return bound(sqlite3_bind_double', "    return bound(sqlite3_bind_double"),
+ ("Q25 bind_text: a NULL statement is passed on (the message differs only)", '    if (!s) CBAE_RETURN_ERR(CBAE_ERR_INVALID, "null statement");\n    return bound(sqlite3_bind_text', "    return bound(sqlite3_bind_text"),
+ ("Q26 bind_blob: a NULL statement is passed on (the message differs only)", '    if (!s) CBAE_RETURN_ERR(CBAE_ERR_INVALID, "null statement");\n    /* SQLite takes', "    /* SQLite takes"),
+ ("Q27 bind_null: a NULL statement is passed on (the message differs only)", '    if (!s) CBAE_RETURN_ERR(CBAE_ERR_INVALID, "null statement");\n    return bound(sqlite3_bind_null', "    return bound(sqlite3_bind_null"),
+ ("Q28 bind_blob: a length of -1 is let through", "if (len < 0) CBAE_RETURN_ERR", "if (len < -1) CBAE_RETURN_ERR"),
+ ("Q29 bind_blob: no negative length is refused", "    if (len < 0) CBAE_RETURN_ERR(CBAE_ERR_INVALID, \"bind_blob at parameter %d: negative length %d\", idx, len);\n", ""),
+ ("Q30 bind_blob: NULL with a length is let through", "    if (!data && len > 0) CBAE_RETURN_ERR(CBAE_ERR_INVALID, \"bind_blob at parameter %d: %d bytes from a NULL pointer\", idx, len);\n", ""),
+ ("Q31 bind_blob: NULL with no length is refused", "if (!data && len > 0)", "if (!data)"),
+ ("Q32 bind_text: the text is not copied", "SQLITE_TRANSIENT), \"text\"", "SQLITE_STATIC), \"text\""),
+ ("Q33 bind_blob: the data is not copied", "SQLITE_TRANSIENT), \"blob\"", "SQLITE_STATIC), \"blob\""),
+ ("Q34 columns: a column that does not exist is not refused (SQLite answers NULL but leaves a column-range error on the connection)", "static bool has_column(sqlite3_stmt *s, int c) { return s && c >= 0 && c < sqlite3_data_count(s); }", "static bool has_column(sqlite3_stmt *s, int c) { return s && c < sqlite3_data_count(s); }"),
+ ("Q35 columns: a column beyond the last is not refused (SQLite answers NULL but leaves a column-range error on the connection)", "static bool has_column(sqlite3_stmt *s, int c) { return s && c >= 0 && c < sqlite3_data_count(s); }", "static bool has_column(sqlite3_stmt *s, int c) { return s && c >= 0; }"),
+ ("Q36 columns: a NULL statement is not refused (equivalent: sqlite3_data_count(NULL) is 0, so the range test refuses it anyway)", "static bool has_column(sqlite3_stmt *s, int c) { return s && c >= 0 && c < sqlite3_data_count(s); }", "static bool has_column(sqlite3_stmt *s, int c) { return c >= 0 && c < sqlite3_data_count(s); }"),
+ ("Q37 columns: the int64 of a column that is not there is 1", "has_column(s, c) ? (int64_t)sqlite3_column_int64(s, c) : 0", "has_column(s, c) ? (int64_t)sqlite3_column_int64(s, c) : 1"),
+ ("Q38 columns: the text is the blob", "(const char *)sqlite3_column_text(s, c) : NULL", "(const char *)sqlite3_column_blob(s, c) : NULL"),
+]

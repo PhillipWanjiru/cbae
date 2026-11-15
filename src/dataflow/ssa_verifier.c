@@ -121,7 +121,7 @@ static cbae_err_t dominance_build(const cbae_cir_function_t *f, dominance_t *d) 
     dom_csr_free(&csr);
     if (rc == CBAE_OK) rc = dom_core_build_children(n, 0, idom, children);
     if (rc == CBAE_OK) {
-        dom_core_number_tree(n, 0, children, d->enter, d->leave);
+        rc = dom_core_number_tree(n, 0, children, d->enter, d->leave);
         for (uint32_t i = 0; i < n; i++) cbae_vector_destroy(&children[i]);
     }
     free(idom); free(rpo_order); free(rpo_number); free(children);

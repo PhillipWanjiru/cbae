@@ -40,10 +40,18 @@ typedef struct cbae_error_context {
 
 cbae_error_context_t *cbae_error_get_context(void);
 void                  cbae_error_clear(void);
+#if defined(__GNUC__)
+#define CBAE_PRINTF_FORMAT(fmt_idx, first_arg) __attribute__((format(printf, fmt_idx, first_arg)))
+#else
+#define CBAE_PRINTF_FORMAT(fmt_idx, first_arg)
+#endif
+
+/** Records an error in the calling thread's context. @p fmt is a printf format; its arguments may
+ *  include cbae_last_error() (the message is formatted before the old one is replaced). */
 void                  cbae_error_set(cbae_err_t code,
                                      const char *file, int line,
                                      const char *func,
-                                     const char *fmt, ...);
+                                     const char *fmt, ...) CBAE_PRINTF_FORMAT(5, 6);
 
 #define CBAE_SET_ERR(code, fmt, ...) \
     cbae_error_set((code), __FILE__, __LINE__, __func__, (fmt), ##__VA_ARGS__)

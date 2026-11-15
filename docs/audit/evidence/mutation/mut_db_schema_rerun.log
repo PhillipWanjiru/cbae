@@ -1,0 +1,7 @@
+KILLED   S03 version: a failed read is a generic error  <- test_db_persistence: test_db_persistence: /home/claude/mutsnap2/cbae/tests/unit/test_db_persistence.c:1157: test_version_read_failure: Assertion `cbae_schema_ver  (1s)
+KILLED   S13 migrate_once: the next version is not taken from what was found  <- test_db_persistence: test_db_persistence: /home/claude/mutsnap2/cbae/tests/unit/test_db_persistence.c:1212: test_migration_after_waiting: Assertion `version == 2  (1s)
+KILLED   S20 migrate_once: the new version is not reported  <- test_db_persistence: test_db_persistence: /home/claude/mutsnap2/cbae/tests/unit/test_db_persistence.c:1051: test_migration: Assertion `commits == CBAE_SCHEMA_CUR  (1s)
+SURVIVED S21 migrate: a failed read of the version is not returned (equivalent: the next step fails the same way)  (4s)
+SURVIVED S26 migrate: a newer schema is refused at the version itself (equivalent: the loop never runs for it)  (4s)
+
+killed 3, survived/failed 2: S21 S26

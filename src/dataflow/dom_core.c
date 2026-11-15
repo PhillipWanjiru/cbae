@@ -29,6 +29,9 @@
 cbae_err_t dom_csr_build(uint32_t n, const uint32_t *from, const uint32_t *to,
                          uint32_t m, dom_csr_t *out) {
     memset(out, 0, sizeof(*out));
+    if (n > DOM_MAX_NODES || m > 3u * DOM_MAX_NODES)
+        CBAE_RETURN_ERR(CBAE_ERR_OVERFLOW,
+            "dominator core: a graph of %u nodes and %u edges is larger than the %u nodes it takes", n, m, DOM_MAX_NODES);
 
     out->succ_off = calloc((size_t)n + 1, sizeof(uint32_t));
     out->pred_off = calloc((size_t)n + 1, sizeof(uint32_t));
@@ -211,17 +214,23 @@ cbae_err_t dom_core_build_children(uint32_t n, uint32_t root,
     return CBAE_OK;
 }
 
-void dom_core_number_tree(uint32_t n, uint32_t root,
-                          const cbae_vector_t *children,
-                          uint32_t *enter, uint32_t *leave) {
-    dfs_frame_t *stack = malloc(sizeof(dfs_frame_t) * n);
-    if (!stack) {
-        /* Cannot happen for sane n; make every query answer "no" rather
-         * than read uninitialised intervals. */
-        for (uint32_t i = 0; i < n; i++) { enter[i] = 1; leave[i] = 0; }
-        return;
-    }
+#define UNNUMBERED UINT32_MAX     /* no time reaches it: a tree of at most DOM_MAX_NODES nodes uses times below 2^30 */
 
+cbae_err_t dom_core_number_tree(uint32_t n, uint32_t root,
+                                const cbae_vector_t *children,
+                                uint32_t *enter, uint32_t *leave) {
+    if (root >= n)                          /* also: no nodes at all, for then no root is one of them */
+        CBAE_RETURN_ERR(CBAE_ERR_INVALID, "dominator tree numbering: no nodes, or the root is not one of them");
+    if (n > DOM_MAX_NODES)
+        CBAE_RETURN_ERR(CBAE_ERR_OVERFLOW, "dominator tree numbering: %u nodes, more than the %u it takes", n, DOM_MAX_NODES);
+    dfs_frame_t *stack = malloc(sizeof(dfs_frame_t) * n);
+    if (!stack) CBAE_RETURN_ERR(CBAE_ERR_OOM, "dominator tree numbering: DFS stack alloc failed");
+
+    /* `enter` doubles as the record of which nodes have been entered. A node entered twice is a node with two parents or
+     * a cycle: refused, and that is what keeps the stack (n frames, one per node on the path) from overflowing and the
+     * work from growing past one visit per node. A tree of n nodes uses the times 0 .. 2n-1, so if the walk ends on any
+     * other count a node was never reached. */
+    for (uint32_t i = 0; i < n; i++) enter[i] = UNNUMBERED;
     uint32_t timer = 0;
     uint32_t sp = 0;
 
@@ -233,13 +242,19 @@ void dom_core_number_tree(uint32_t n, uint32_t root,
     while (sp > 0) {
         dfs_frame_t *top = &stack[sp - 1];
         const cbae_vector_t *kids = &children[top->node];
-        uint32_t nkids = (uint32_t)cbae_vector_count(kids);
+        const uint32_t nkids = (uint32_t)cbae_vector_count(kids);
 
         if (top->next_edge < nkids) {
-            const uint32_t *child = cbae_vector_at(kids, top->next_edge);
+            const uint32_t child = *(const uint32_t *)cbae_vector_at(kids, top->next_edge);
             top->next_edge++;
-            enter[*child] = timer++;
-            stack[sp].node = *child;
+            if (child >= n || enter[child] != UNNUMBERED) {
+                free(stack);
+                CBAE_RETURN_ERR(CBAE_ERR_INVALID,
+                    "dominator tree numbering: the children of the nodes are not a tree (node %u is a child that does not exist, "
+                    "or is reached twice)", child);
+            }
+            enter[child] = timer++;
+            stack[sp].node = child;
             stack[sp].next_edge = 0;
             sp++;
         } else {
@@ -248,4 +263,7 @@ void dom_core_number_tree(uint32_t n, uint32_t root,
         }
     }
     free(stack);
+    if (timer != 2u * n)
+        CBAE_RETURN_ERR(CBAE_ERR_INVALID, "dominator tree numbering: the root reaches %u of the %u nodes", timer / 2u, n);
+    return CBAE_OK;
 }

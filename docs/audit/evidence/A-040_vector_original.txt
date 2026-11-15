@@ -1,0 +1,20 @@
+A-040 evidence: the NEW tests/unit/test_vector.c run, one test per process, against the ORIGINAL (Phase 5) vector.c
+(each test in its own process; ASan+UBSan; the shim only adapts the two signatures that changed)
+  PASS  test_basics
+  PASS  test_growth
+==18402==ERROR: AddressSanitizer: heap-use-after-free on address 0x502000000010 at pc 0x7f28bacfb42e bp 0x7fff5951e390 sp 0x7fff5951db38
+SUMMARY: AddressSanitizer: heap-use-after-free ../../../../src/libsanitizer/sanitizer_common/sanitizer_common_interceptors_memintrinsics.inc:115 in memcpy
+  FAIL  test_push_of_own_element  (exit 1)
+  FAIL  test_overflow  (signal 6)
+  FAIL  test_uninitialised  (signal 6)
+  PASS  test_resize_sort_search
+  FAIL  test_allocation_failure  (signal 6)
+4 of 7 failed
+original cbae_vector_reserve(&v, 18446744073709551610) ...
+exit status 124 (124: killed by the 5 s timeout; the doubling loop never ends once the capacity wraps to 0)
+
+original cbae_vector_reserve(&v, 9223372036854775808) ...
+returned -2
+==20572==ERROR: AddressSanitizer: attempting double-free on 0x502000000010 in thread T0:
+SUMMARY: AddressSanitizer: double-free ../../../../src/libsanitizer/asan/asan_malloc_linux.cpp:52 in free
+(2^63 elements of 4 bytes: the byte count wraps to 0, realloc(p, 0) frees the vector's block and fails, and destroy then frees it again)

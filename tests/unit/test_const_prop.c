@@ -937,22 +937,27 @@ static void t_malformed(void) {
     cbae_cir_builder_t *b = &x.bld;
     val_t c5 = ci(b, T64, 5), c7 = ci(b, T64, 7), c9 = ci(b, T64, 9);
     val_t one_op[1] = { c5 }, two_ops[2] = { c5, c7 }, three_ops[3] = { c5, c7, c5 };
-    val_t null_a[2] = { NULL, c5 }, null_b[2] = { c5, NULL }, null_one[1] = { NULL };
     val_t add1  = cbae_cir_emit(b, CIR_OP_ADD, T64, 0, one_op, 1);
     val_t add1s = cbae_cir_emit(b, CIR_OP_ADD, T64, 0, one_op, 1);       /* a stale operand beyond the count */
     k_def(add1s)->operands[1] = c7;
     val_t add0  = cbae_cir_emit(b, CIR_OP_ADD, T64, 0, NULL, 0);
     val_t add3  = cbae_cir_emit(b, CIR_OP_ADD, T64, 0, three_ops, 3);
-    val_t addna = cbae_cir_emit(b, CIR_OP_ADD, T64, 0, null_a, 2);
-    val_t addnb = cbae_cir_emit(b, CIR_OP_ADD, T64, 0, null_b, 2);
+    val_t addna = cbae_cir_emit(b, CIR_OP_ADD, T64, 0, two_ops, 2);      /* the builder refuses a NULL operand: it is put in afterwards */
+    k_def(addna)->operands[0] = NULL;
+    val_t addnb = cbae_cir_emit(b, CIR_OP_ADD, T64, 0, two_ops, 2);
+    k_def(addnb)->operands[1] = NULL;
     val_t shl1  = cbae_cir_emit(b, CIR_OP_SHL, T64, 0, one_op, 1);
     val_t shl3  = cbae_cir_emit(b, CIR_OP_SHL, T64, 0, three_ops, 3);
-    val_t shlna = cbae_cir_emit(b, CIR_OP_SHL, T64, 0, null_a, 2);
-    val_t shlnb = cbae_cir_emit(b, CIR_OP_SHL, T64, 0, null_b, 2);
+    val_t shlna = cbae_cir_emit(b, CIR_OP_SHL, T64, 0, two_ops, 2);
+    k_def(shlna)->operands[0] = NULL;
+    val_t shlnb = cbae_cir_emit(b, CIR_OP_SHL, T64, 0, two_ops, 2);
+    k_def(shlnb)->operands[1] = NULL;
     val_t not2  = cbae_cir_emit(b, CIR_OP_NOT, T64, 0, two_ops, 2);
-    val_t notn  = cbae_cir_emit(b, CIR_OP_NOT, T64, 0, null_one, 1);
+    val_t notn  = cbae_cir_emit(b, CIR_OP_NOT, T64, 0, one_op, 1);
+    k_def(notn)->operands[0] = NULL;
     val_t cpy2  = cbae_cir_emit(b, CIR_OP_COPY, T64, 0, two_ops, 2);
-    val_t cpyn  = cbae_cir_emit(b, CIR_OP_COPY, T64, 0, null_one, 1);
+    val_t cpyn  = cbae_cir_emit(b, CIR_OP_COPY, T64, 0, one_op, 1);
+    k_def(cpyn)->operands[0] = NULL;
 
     /* results hand-edited to void after the fact */
     val_t vadd = bin(b, CIR_OP_ADD, c5, c7, T64);
@@ -968,7 +973,8 @@ static void t_malformed(void) {
     assert(cbae_cir_emit(b, CIR_OP_NOT, cir_type_void(), 0, one_op, 1) == NULL);
     assert(cbae_cir_emit(b, CIR_OP_SHL, cir_type_void(), 0, two_ops, 2) == NULL);
     assert(x.b0->instruction_count == before + 4);          /* all four really are in the block */
-    val_t vconst = ci(b, cir_type_void(), 5);
+    val_t vconst = ci(b, T64, 5);                            /* (the builder refuses a void constant) */
+    vconst->type = cir_type_void();
     val_t after = bin(b, CIR_OP_ADD, c5, c7, T64);           /* evaluated after all of the above */
 
     cbae_cir_emit(b, CIR_OP_BRANCH, cir_type_void(), 0, NULL, 0);     /* no condition at all */
@@ -983,7 +989,8 @@ static void t_malformed(void) {
     val_t phvd  = phi(&x, b1, T64);
     incoming(&x, ph, c5, x.b0);
     incoming(&x, ph, c9, b2);                                              /* b2 has no edge to b1 */
-    assert(cbae_cir_phi_add_incoming(x.f, ph->u.def_insn, c9, 99) == CBAE_OK);   /* no block 99 */
+    assert(cbae_cir_phi_add_incoming(x.f, ph->u.def_insn, c9, x.b0->id) == CBAE_OK);
+    ph->u.def_insn->phi_incoming_blocks[ph->u.def_insn->phi_incoming_count - 1] = 99;   /* no block 99 (the builder would not add it) */
     incoming(&x, phvd, c5, x.b0);
     phvd->type = cir_type_void();
     ret(&x, b1);
@@ -1052,7 +1059,9 @@ static void t_branch_shapes(void) {
     k_last(&x.bld)->branch_true_block = 77;                 /* not a successor of b2 */
     ret(&x, b1); ret(&x, b3);
     fn_at(&x, b4);
-    cbae_cir_branch(&x.bld, ci(&x.bld, cir_type_void(), 1), b5, b6, 0);
+    val_t void_cond = ci(&x.bld, T1, 1);
+    void_cond->type = cir_type_void();                      /* a condition with no width */
+    cbae_cir_branch(&x.bld, void_cond, b5, b6, 0);
     ret(&x, b5);
     fn_at(&x, b9);                                          /* dead: nothing leads here */
     val_t dead = bin(&x.bld, CIR_OP_CMP, ci(&x.bld, T64, 1), ci(&x.bld, T64, 2), T1);

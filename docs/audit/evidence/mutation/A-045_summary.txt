@@ -1,0 +1,14 @@
+A-045 (CIR serializer): mutation testing of src/cir/cir_serializer.c on the sanitized (ASan+UBSan) build.
+
+302 mutants (tools/mutation/mutants_cir_serializer.py, tags Z01-Z302).
+Result: 285 killed, 16 equivalent, 1 unreachable (Z191). The reason for each equivalent or unreachable mutant is in its name.
+
+mut_cir_serializer_pass1_c1.log, _c2.log, _c3.log are the first complete pass, run in three chunks. It left 20 survivors:
+  Z10 Z92 Z138 Z141 Z142 Z168 Z171 Z177 Z180 Z191 Z203 Z248 Z253 Z255 Z259 Z260 Z261 Z269 Z281 Z282
+Three were gaps in the tests and were closed in tests/unit/test_cir_serializer.c:
+  Z203, Z261  a function with one long block was added to the out-of-memory sweep
+  Z253        a block holding a phi with four incoming pairs and a return with a missing operand was added to the
+              every-prefix test (a cut inside the last 32 bytes of a block is only seen when the block is that fat)
+The other 17 are the 16 equivalent mutants and Z191.
+
+Still to do: one clean run of all 302 mutants against the final tests.

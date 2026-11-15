@@ -1,0 +1,16 @@
+-- baseline
+K=500    blocks=502    tree build     0.68 ms   frontier best-of-3      0.37 ms   (frontier members: 500)
+-- fixed
+K=500    blocks=502    tree build     0.68 ms   frontier best-of-3      0.01 ms   (frontier members: 500)
+-- baseline
+K=2000   blocks=2002   tree build     9.11 ms   frontier best-of-3      4.25 ms   (frontier members: 2000)
+-- fixed
+K=2000   blocks=2002   tree build     9.35 ms   frontier best-of-3      0.05 ms   (frontier members: 2000)
+-- baseline
+K=8000   blocks=8002   tree build   153.60 ms   frontier best-of-3     66.11 ms   (frontier members: 8000)
+-- fixed
+K=8000   blocks=8002   tree build   148.21 ms   frontier best-of-3      0.18 ms   (frontier members: 8000)
+-- baseline
+K=20000  blocks=20002  tree build   955.48 ms   frontier best-of-3    396.98 ms   (frontier members: 20000)
+-- fixed
+K=20000  blocks=20002  tree build   938.49 ms   frontier best-of-3      0.58 ms   (frontier members: 20000)

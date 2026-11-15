@@ -8,3 +8,6 @@ __pycache__/
 *.db-wal
 *.db-shm
 rust/target/
+
+# test fixtures are real compiled binaries the tests read
+!tests/fixtures/**

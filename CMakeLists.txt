@@ -17,6 +17,21 @@ else()
     add_compile_options(-O2 -DNDEBUG)
 endif()
 
+# -DCBAE_SANITIZE=address   ASan + UBSan (+ LeakSanitizer where the platform has it); a UBSan finding aborts
+# -DCBAE_SANITIZE=thread    TSan
+# Applied to every library, test and tool of the build. tests/run_gates.sh drives all configurations.
+set(CBAE_SANITIZE "" CACHE STRING "Sanitizer build: address, thread, or empty")
+set_property(CACHE CBAE_SANITIZE PROPERTY STRINGS "" address thread)
+if(CBAE_SANITIZE STREQUAL "address")
+    add_compile_options(-fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer)
+    add_link_options(-fsanitize=address,undefined)
+elseif(CBAE_SANITIZE STREQUAL "thread")
+    add_compile_options(-fsanitize=thread -fno-omit-frame-pointer)
+    add_link_options(-fsanitize=thread)
+elseif(NOT CBAE_SANITIZE STREQUAL "")
+    message(FATAL_ERROR "CBAE_SANITIZE must be 'address', 'thread' or empty (got '${CBAE_SANITIZE}')")
+endif()
+
 find_package(Threads REQUIRED)
 find_package(SQLite3 REQUIRED)
 
@@ -54,6 +69,8 @@ add_library(cbae_platform STATIC
     src/platform/hashmap.c
     src/platform/vector.c
     src/platform/string_pool.c
+    src/platform/siphash.c
+    src/platform/sha256.c
     src/platform/logging.c
     src/platform/file_io.c
     src/platform/thread_pool.c

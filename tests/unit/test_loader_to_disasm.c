@@ -13,36 +13,16 @@
 #include "loader/pe_loader.h"
 #include "disasm/cfg.h"
 #include "platform/logging.h"
+#include "pe_builder.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
 
-#define DOS_MAGIC     0x5A4D
-#define PE_SIG        0x00004550
-#define OPT_PE32P     0x020B
-#define MACH_AMD64    0x8664
-#define SUBSYS_NATIVE 1
 #define IBASE         UINT64_C(0xFFFFF80000000000)
 
-#pragma pack(push,1)
-typedef struct { uint16_t magic; uint8_t _[58]; uint32_t lfanew; } t_dos;
-typedef struct {
-    uint16_t machine,nsec,ts0,ts1; uint32_t sp,ns; uint16_t optsz,chars;
-} t_coff;
-typedef struct { uint32_t rva,sz; } t_dd;
-typedef struct {
-    uint16_t magic,ml,mn; uint32_t cs,is,us,ep,cb;
-    uint64_t ibase;
-    uint32_t sa,fa; uint8_t _w[16];
-    uint32_t imgsz,hdrsz,ck; uint16_t sub,dc;
-    uint8_t _s[32]; uint32_t ndirs; t_dd dirs[16];
-} t_opt;
-typedef struct {
-    uint8_t name[8]; uint32_t vsz,va,rsz,roff; uint8_t _[12]; uint32_t chars;
-} t_sec;
-#pragma pack(pop)
+
 
 static char g_tmp[256];
 static void cleanup(void) { if (g_tmp[0]) unlink(g_tmp); }
@@ -71,52 +51,22 @@ static const uint8_t FUNC_BYTES[] = {
 #define FUNC_LEN  sizeof(FUNC_BYTES)
 
 static void write_synthetic_pe(void) {
-    uint8_t buf[0x600];
-    memset(buf, 0, sizeof(buf));
+    /* one executable section, written by the independent spec-based builder (pe_builder.h), not through a
+     * struct the loader shares: a struct copied from the loader hid a two-byte layout error for two phases */
+    pb_mini_t m = pb_mini((uint32_t)FUNC_LEN);
+    const uint32_t sh = m.opt + PB_OPT_PE32P_SIZE;                        /* the section header */
+    memcpy(m.b + sh + PB_SEC_NAME, ".text\0\0\0", 8);
+    pb_w32(m.b, sh + PB_SEC_VSIZE, 0x1000);
+    pb_w32(m.b, sh + PB_SEC_CHARS, PB_SCN_CODE | PB_SCN_EXEC | PB_SCN_READ);
+    pb_w32(m.b, m.opt + PB_OPT_ENTRY_RVA, 0x1000);                        /* DriverEntry at the start of .text */
+    pb_w64(m.b, m.opt + PB_OPT_IMAGE_BASE, IBASE);
+    memcpy(m.b + m.sec_off, FUNC_BYTES, FUNC_LEN);
 
-    t_dos *dos = (t_dos *)buf;
-    dos->magic  = DOS_MAGIC;
-    dos->lfanew = 0x40;
-
-    *(uint32_t *)(buf + 0x40) = PE_SIG;
-
-    t_coff *coff = (t_coff *)(buf + 0x44);
-    coff->machine = MACH_AMD64;
-    coff->nsec    = 1;
-    coff->optsz   = (uint16_t)sizeof(t_opt);
-    coff->chars   = 0x0002;
-
-    t_opt *opt = (t_opt *)(buf + 0x44 + sizeof(t_coff));
-    opt->magic     = OPT_PE32P;
-    opt->ep        = 0x1000;      /* DriverEntry at the start of .text  */
-    opt->ibase     = IBASE;
-    opt->sa        = 0x1000;
-    opt->fa        = 0x200;
-    opt->imgsz     = 0x3000;
-    opt->hdrsz     = 0x400;
-    opt->sub       = SUBSYS_NATIVE;
-    opt->ndirs     = 16;
-    /* All data directories left zeroed -- no imports/exports/relocs.
-     * cbae_pe_load's soft-error handling means this is a fully valid,
-     * if minimal, driver image. */
-
-    t_sec *sec = (t_sec *)((uint8_t *)opt + sizeof(t_opt));
-    memcpy(sec->name, ".text\0\0\0", 8);
-    sec->vsz   = 0x1000;
-    sec->va    = 0x1000;
-    sec->rsz   = (uint32_t)FUNC_LEN;
-    sec->roff  = 0x400;
-    sec->chars = 0x60000020; /* exec + read + code */
-
-    memcpy(buf + 0x400, FUNC_BYTES, FUNC_LEN);
-
-    snprintf(g_tmp, sizeof(g_tmp), "/tmp/cbae_loader_to_disasm_%d.sys",
-             (int)getpid());
+    snprintf(g_tmp, sizeof(g_tmp), "/tmp/cbae_loader_to_disasm_%d.sys", (int)getpid());
     atexit(cleanup);
-    FILE *f = fopen(g_tmp, "wb");
-    assert(f);
-    fwrite(buf, 1, sizeof(buf), f);
-    fclose(f);
+    const pb_file_t file = { m.b, m.n };
+    assert(pb_write(g_tmp, &file));
+    pb_mini_free(&m);
 }
 
 static void t_full_pipeline(void) {

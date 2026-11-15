@@ -1,0 +1,9 @@
+SURVIVED B38 block_create: the room is not recorded (equivalent: the first instruction makes the same array)  (2s)
+SURVIVED B47 block_at: an unknown address finds what the map left behind  (2s)
+KILLED   B55 reserve_edges: room is made for an edge that is there as well  <- test_cir_builder_hostile: test_cir_builder_hostile: /home/claude/mutsnap2/cbae/tests/unit/test_cir_builder_hostile.c:809: test_edge
+KILLED   B87 reserve_insn_slot: the array grows by one  <- test_cir_builder_hostile: test_cir_builder_hostile: /home/claude/mutsnap2/cbae/tests/unit/test_cir_builder_hostile.c:776: test_scale: Assertion `cbae_c
+SURVIVED B124 prepare_insn: the copy is not terminated (equivalent: the arena's memory is zero, and the next allocation never starts inside the copy's byte)  (2s)
+KILLED   B156 branch: the condition is not an operand  <- test_cir_builder_hostile: test_cir_builder_hostile: /home/claude/mutsnap2/cbae/tests/unit/test_cir_builder_hostile.c:340: expect_code: Assertion `rc == 
+KILLED   B182 phi_add_incoming: the arrays grow by one  <- test_cir_builder_hostile: test_cir_builder_hostile: /home/claude/mutsnap2/cbae/tests/unit/test_cir_builder_hostile.c:781: test_scale: Assertion `cbae_c
+
+killed 4, survived/failed 3: B38 B47 B124

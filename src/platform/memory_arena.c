@@ -26,18 +26,35 @@ void cbae_arena_destroy(cbae_arena_t *a) {
 }
 
 void *cbae_arena_alloc(cbae_arena_t *a, size_t size, size_t align) {
-    if(!a || size == 0) return NULL;
+    if(!a || !a->base) return NULL;
     if(align == 0) align = 1;
-    size_t aligned = CBAE_ALIGN_UP(a->used, align);
-    if(aligned + size > a->capacity) {
-        CBAE_SET_ERR(CBAE_ERR_OOM, "arena exhausted: need %zu, have %zu",
-                     size, a->capacity - aligned);
+    if(align & (align - 1)) {
+        CBAE_SET_ERR(CBAE_ERR_INVALID, "arena alignment %zu is not a power of two", align);
         return NULL;
     }
-    void *ptr = a->base + aligned;
-    a->used   = aligned + size;
+    /* Align the ADDRESS, not the offset: base is only malloc-aligned, so for a larger alignment the
+     * offset and the address disagree. Every comparison is a subtraction from a quantity known to be
+     * in range (used <= capacity), so no sum of untrusted numbers can wrap. */
+    const size_t pad = (size_t)(0 - ((uintptr_t)a->base + a->used)) & (align - 1);
+    const size_t room = a->capacity - a->used;
+    if(size == 0) return a->base + a->used;
+    if(pad > room || size > room - pad) {
+        CBAE_SET_ERR(CBAE_ERR_OOM, "arena exhausted: need %zu bytes (aligned to %zu), have %zu",
+                     size, align, pad > room ? (size_t)0 : room - pad);
+        return NULL;
+    }
+    void *ptr = a->base + a->used + pad;
+    a->used  += pad + size;
     memset(ptr, 0, size);
     return ptr;
+}
+
+void *cbae_arena_alloc_array(cbae_arena_t *a, size_t elem_size, size_t n, size_t align) {
+    if(elem_size != 0 && n > SIZE_MAX / elem_size) {
+        CBAE_SET_ERR(CBAE_ERR_OVERFLOW, "arena array of %zu x %zu bytes does not fit in size_t", n, elem_size);
+        return NULL;
+    }
+    return cbae_arena_alloc(a, elem_size * n, align);
 }
 
 void   cbae_arena_reset    (cbae_arena_t *a) { if(a) a->used = 0; }

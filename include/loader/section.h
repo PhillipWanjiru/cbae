@@ -34,7 +34,7 @@ typedef struct cbae_section {
 
 static inline bool cbae_section_contains_va(const cbae_section_t *s,
                                              cbae_addr_t va)
-{ return va >= s->virt_addr && va < s->virt_addr + s->virt_size; }
+{ return va >= s->virt_addr && va - s->virt_addr < s->virt_size; }   /* no sum: a section at the top of the address space must not wrap */
 
 static inline const uint8_t *cbae_section_va_to_ptr(const cbae_section_t *s,
                                                       cbae_addr_t va)

@@ -1119,12 +1119,15 @@ static void t_malformed(void) {
     insn_t s = k_store(b, p, c);
     cbae_cir_value_t *ops1[1] = { p };
     insn_t m1 = k_raw(b, CIR_OP_STORE, ops1, 1);
-    cbae_cir_value_t *ops2[2] = { p, NULL };
-    insn_t m2 = k_raw(b, CIR_OP_STORE, ops2, 2);
+    cbae_cir_value_t *ops2[2] = { p, c };
+    cbae_cir_instruction_t *m2w = k_raw(b, CIR_OP_STORE, ops2, 2);
+    m2w->operands[1] = NULL;                                  /* the builder refuses a NULL operand: it is put in afterwards */
+    insn_t m2 = m2w;
     cbae_cir_value_t *l = k_load(b, p);
-    cbae_cir_value_t *nops[1] = { NULL };
+    cbae_cir_value_t *nops[1] = { p };
     cbae_cir_value_t *ln = cbae_cir_emit(b, CIR_OP_LOAD, T64, 0, nops, 1);
     assert(ln);
+    k_def(ln)->operands[0] = NULL;
     cbae_cir_return(b, NULL, 0);
 
     rsx_t r; rsx_build_unchecked(&r, x.f);

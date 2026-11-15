@@ -1,0 +1,55 @@
+A-033  thread pool (src/platform/thread_pool.c, include/platform/thread_pool.h): the Phase 1 implementation, measured
+=====================================================================================================================
+
+The original pool had no header and no function to queue work: a pool could be created and destroyed and nothing
+else (cbae_thread_pool_submit did not exist; no other file used the pool). The program A-033_demo.c in this
+directory includes the original thread_pool.c, so that its private type is visible, and drives it through the
+failures that creation can meet: the allocator failing (tests/unit/alloc_inject.h) and the system refusing a thread
+(a wrapper for pthread_create). The same program was compiled against the rewritten pool.
+
+######## base
+-- mode 1: the allocation of the pool fails
+   exit status 139
+-- mode 2: the system refuses the 3rd thread of 4
+create returned 0 (0 = success), pool returned; 4 workers asked for, 2 running
+destroy returned
+   exit status 0
+-- mode 5: as mode 2, on a heap that holds old data
+create returned 0 (0 = success)
+   exit status 139
+-- mode 3: 100000 threads asked for, every thread refused
+create returned 0 (0 = success), pthread_create was called 100000 times
+   exit status 0
+-- mode 4: cbae_thread_pool_wait(NULL)
+   exit status 139
+######## new
+-- mode 1: the allocation of the pool fails
+create returned -2
+   exit status 0
+-- mode 2: the system refuses the 3rd thread of 4
+create returned -12 (0 = success), pool NULL; 4 workers asked for, 0 running
+destroy returned
+   exit status 0
+-- mode 5: as mode 2, on a heap that holds old data
+create returned -12 (0 = success)
+destroy returned
+   exit status 0
+-- mode 3: 100000 threads asked for, every thread refused
+create returned -4 (0 = success), pthread_create was called 0 times
+   exit status 0
+-- mode 4: cbae_thread_pool_wait(NULL)
+wait(NULL) returned
+   exit status 0
+
+(exit status 139 = SIGSEGV. In mode 5 the original joins threads[2] and threads[3], which were never created, so the
+result depends on what the heap held; mode 2 is the same defect on a clean heap, where the junk happens to be zero.)
+
+Other defects read off the source (all fixed, each covered by tests/unit/test_thread_pool.c):
+ - no header, no submit: the API could not be used
+ - the thread count n was unbounded (n = INT_MAX would ask for 2 billion threads) - now 1..256, else CBAE_ERR_INVALID
+ - the results of pthread_mutex_init, pthread_cond_init and pthread_create were ignored; thread_count was n even when
+   fewer threads existed, and destroy joined all n - now CBAE_ERR_THREAD, with the started workers stopped and joined
+ - *out was left unset on failure - now NULL
+ - wait and destroy of a NULL pool: wait crashed - now ignored
+ - a NULL task function would have crashed a worker - now refused at submit
+ - destroy during submit was undefined without saying so - now: a late submit is refused, an accepted task always runs

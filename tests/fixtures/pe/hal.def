@@ -1,0 +1,4 @@
+LIBRARY HAL.dll
+EXPORTS
+KeStallExecutionProcessor @ 33
+HalQueryCounterByOrdinal @ 12 NONAME

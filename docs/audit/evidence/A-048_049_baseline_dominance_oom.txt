@@ -1,0 +1,41 @@
+=== section: dom
+[one block] dominator tree, allocation 1 failing: returned -2, tree NOT empty
+test_dominance_oom: tests/unit/test_dominance_oom.c:169: dom_body: Assertion `all_zero(&dt, sizeof dt)' failed.
+exit=0
+=== section: frontier
+[one block] dominance frontier, allocation 1 failing: returned -2, frontier NOT empty
+test_dominance_oom: tests/unit/test_dominance_oom.c:188: frontier_body: Assertion `all_zero(&df, sizeof df)' failed.
+exit=0
+=== section: pdom
+[one block] post-dominator tree, allocation 1 failing: returned -2, tree NOT empty
+test_dominance_oom: tests/unit/test_dominance_oom.c:208: pdom_body: Assertion `all_zero(&pt, sizeof pt)' failed.
+exit=0
+=== section: arena
+test_dominance_oom: tests/unit/test_dominance_oom.c:226: dom_arena_body: Assertion `all_zero(&dt, sizeof dt)' failed.
+exit=0
+=== section: verifier
+oom_sweep: allocation 36 failed (alone) and the operation still reported success
+test_dominance_oom: tests/unit/oom_sweep.h:63: oom_sweep: Assertion `!"an allocation failure was swallowed"' failed.
+exit=0
+=== section (state assertions removed): dom
+[one block] dominator tree, allocation 1 failing: returned -2, tree NOT empty
+[one block] dominator tree, allocation 2 failing: returned -2, tree NOT empty
+[one block] dominator tree, allocation 3 failing: returned -2, tree NOT empty
+[one block] dominator tree, allocation 4 failing: returned -2, tree NOT empty
+=== section (state assertions removed): frontier
+[one block] dominance frontier, allocation 1 failing: returned -2, frontier NOT empty
+oom_sweep: allocation 2 failed (alone) and the operation still reported success
+test_dominance_oom: tests/unit/oom_sweep.h:63: oom_sweep: Assertion `!"an allocation failure was swallowed"' failed.
+=== section (state assertions removed): pdom
+[one block] post-dominator tree, allocation 1 failing: returned -2, tree NOT empty
+[one block] post-dominator tree, allocation 2 failing: returned -2, tree NOT empty
+[one block] post-dominator tree, allocation 3 failing: returned -2, tree NOT empty
+[one block] post-dominator tree, allocation 4 failing: returned -2, tree NOT empty
+=== section (state assertions removed): arena
+=== test_dominance_oom ===
+  [PASS] 33 CFGs (9 shapes, the rest random): 22040 runs with an allocation or an arena byte short, each a clean error with an empty output or the same tree as without failures, none swallowed, no leak
+All dominance out-of-memory tests passed.
+=== section (state assertions removed): dom
+test_dominance_oom: tests/unit/test_dominance_oom.c:173: dom_body: Assertion `dom_same(&fx->dom, &dt)' failed.
+=== section (state assertions removed): pdom
+test_dominance_oom: tests/unit/test_dominance_oom.c:212: pdom_body: Assertion `pdom_same(&fx->pdom, &pt)' failed.

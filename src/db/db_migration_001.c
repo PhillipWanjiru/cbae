@@ -2,8 +2,7 @@
  * @file db_migration_001.c
  * @brief Migration 001 — baseline schema: binaries, analysis_jobs.
  */
-#include "db/db_schema.h"
-#include "db/db_connection.h"
+#include "db_migrations.h"
 #include "platform/logging.h"
 
 static const char S_DDL[] =
@@ -33,7 +32,5 @@ static const char S_DDL[] =
 
 cbae_err_t cbae_db_migration_001(cbae_db_t *db) {
     LOG_INFO("Running migration 001 — baseline schema");
-    int rc = cbae_db_exec(db, S_DDL);
-    if(rc != SQLITE_OK) CBAE_RETURN_ERR(CBAE_ERR_DB, "migration 001 DDL failed");
-    return CBAE_OK;
+    return cbae_db_exec(db, S_DDL);
 }

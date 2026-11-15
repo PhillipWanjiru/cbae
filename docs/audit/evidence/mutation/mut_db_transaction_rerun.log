@@ -1,0 +1,7 @@
+SURVIVED X01 open_on_connection: a transaction without a connection is not allowed for (equivalent: only an active transaction gets here, and it has one)  (6s)
+SURVIVED X13 begin: EXCLUSIVE instead of IMMEDIATE (equivalent in WAL mode)  (4s)
+SURVIVED X24 commit: a failed rollback after a failed commit is not remembered (equivalent: a rollback that fails cannot be provoked)  (4s)
+KILLED   X27 commit: a failed commit is a generic error  <- test_db_persistence: test_db_persistence: /home/claude/mutsnap2/cbae/tests/unit/test_db_persistence.c:934: test_commit_failure: Assertion `cbae_error_get_context  (0s)
+SURVIVED X31 rollback: a failed ROLLBACK ends the transaction (equivalent: a rollback that fails cannot be provoked)  (4s)
+
+killed 1, survived/failed 4: X01 X13 X24 X31

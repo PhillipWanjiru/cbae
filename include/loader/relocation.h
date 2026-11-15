@@ -25,12 +25,15 @@ typedef enum cbae_reloc_type {
     CBAE_RELOC_GOTPCREL  = 8,
 } cbae_reloc_type_t;
 
+/** The sym_index of a relocation that names no symbol: a PE base relocation, an ELF relocation against symbol 0. */
+#define CBAE_RELOC_NO_SYMBOL UINT32_MAX
+
 typedef struct cbae_relocation {
     cbae_addr_t       target_va;
     cbae_off_t        file_offset;
     cbae_reloc_type_t type;
     int64_t           addend;
-    uint32_t          sym_index;
+    uint32_t          sym_index;        /* the symbol it names: an index into img->symbols[], or CBAE_RELOC_NO_SYMBOL */
     uint32_t          page_rva;
     bool              references_import;
     bool              applied;

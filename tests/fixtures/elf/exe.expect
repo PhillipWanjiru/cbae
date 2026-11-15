@@ -1,0 +1,28 @@
+# exe: made by make_expect.py (pyelftools 0.33, readelf agrees on counts)
+elf 2 62 4198480 17 14
+sec 0 0 0 0 0 0 0 0 0 0 -
+sec 1 7 2 4194760 456 32 8 0 0 0 .note.gnu.property
+sec 2 1 6 4198400 4096 113 16 0 0 0 .text
+sec 3 1 2 4202496 8192 32 32 0 0 0 .rodata
+sec 4 1 2 4202528 8224 84 8 0 0 0 .eh_frame
+sec 5 8 3 4206592 12288 64 32 0 0 0 .bss
+sec 6 1 48 0 8308 45 1 1 0 0 .comment
+sec 7 1 0 0 8353 80 1 0 0 0 .debug_aranges
+sec 8 1 0 0 8433 174 1 0 0 0 .debug_info
+sec 9 1 0 0 8607 132 1 0 0 0 .debug_abbrev
+sec 10 1 0 0 8739 162 1 0 0 0 .debug_line
+sec 11 1 48 0 8901 214 1 1 0 0 .debug_str
+sec 12 1 48 0 9115 43 1 1 0 0 .debug_line_str
+sec 13 1 0 0 9158 43 1 0 0 0 .debug_rnglists
+sec 14 2 0 0 9208 240 8 24 15 3 .symtab
+sec 15 3 0 0 9448 54 1 0 0 0 .strtab
+sec 16 3 0 0 9502 180 1 0 0 0 .shstrtab
+sym 1 0 4 65521 0 0 exe.c
+sym 2 0 1 3 4202496 32 table
+sym 3 1 2 2 4198400 61 sum
+sym 4 1 1 5 4206592 64 zeroed
+sym 5 1 2 2 4198480 33 _start
+sym 6 1 0 5 4206592 0 __bss_start
+sym 7 1 0 5 4206592 0 _edata
+sym 8 1 0 5 4206656 0 _end
+sym 9 1 2 2 4198464 11 apply

@@ -18,6 +18,9 @@ extern "C" {
 
 #define CIR_MAX_OPERANDS 4
 
+/* The longest call target name an instruction can hold, in bytes (the serialized form keeps a 16-bit length). */
+#define CIR_MAX_CALL_NAME 65535u
+
 typedef struct cbae_cir_instruction {
     uint32_t           id;            /* unique within the function, printed as #N */
     cbae_cir_opcode_t  opcode;

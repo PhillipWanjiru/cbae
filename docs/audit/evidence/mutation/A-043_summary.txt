@@ -1,0 +1,33 @@
+A-043 (db layer): mutation testing of the rewritten layer, run on the sanitized (ASan+UBSan) build, full (not quick) test.
+
+module          mutants  killed  equivalent
+db_connection        64      61  3   C15 C48 C50
+db_transaction       31      27  4   X01 X13 X24 X31
+db_schema            26      24  2   S21 S26
+db_query             38      37  1   Q36
+total               159     149  10
+
+Process: the first run of each module found survivors X27 S03 S13 S20 Q08 Q32 Q33 Q34 Q35 (and the equivalents above).
+Each was either a real gap in the tests, closed by a new assertion, or proven equivalent:
+  X27  the error code recorded for a failed COMMIT                    -> assertion on the error context's code
+  S03  the error code of a failed version read                        -> assertion on cbae_schema_version()'s result
+  S13  version taken from *current instead of the re-read version     -> count the transactions a migration commits
+  S20  *current not updated (one needless extra transaction)          -> same: commits == CBAE_SCHEMA_CURRENT_VERSION
+  Q08  NULL SQL text passed on to SQLite (message differed only)      -> the message is "null argument"
+  Q32/Q33 text/blob bound without copying (SQLITE_STATIC)             -> overwrite the caller's buffer before the step
+  Q34/Q35 out-of-range column index passed on (SQLite answers NULL but leaves SQLITE_RANGE on the connection)
+                                                                      -> assertion that the connection's error code is unchanged
+The survivors were re-run with the strengthened test (mut_db_*_rerun.log); db_connection was run again in full after a
+sandbox restart cut the first run short (mut_db_connection.log is the complete run).
+
+Equivalent mutants (none can change what a caller, or SQLite, can observe; the reason is in each mutant's name):
+  C15  query_text(): the answer buffer is not cleared first. The two queries (journal_mode, foreign_keys) always return a row.
+  C48  open: not serialized. A connection belongs to one thread (documented).
+  C50  open: a NULL handle is not allowed for. sqlite3_errmsg(NULL) says "out of memory", the message the NULL case gives.
+  X01  open_on_connection: a transaction without a connection is not allowed for. Only an active transaction gets there, and it has one.
+  X13  begin: BEGIN EXCLUSIVE instead of BEGIN IMMEDIATE. The same in WAL mode, which every file connection is in.
+  X24  commit: a failed rollback after a failed commit is not remembered. A rollback that fails cannot be provoked.
+  X31  rollback: a failed ROLLBACK ends the transaction. A rollback that fails cannot be provoked.
+  S21  migrate: a failed read of the version is not returned. The next step fails the same way.
+  S26  migrate: a newer schema is refused at the version itself. The loop never runs for it.
+  Q36  columns: a NULL statement is not refused. sqlite3_data_count(NULL) is 0, so the range test refuses it anyway.

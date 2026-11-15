@@ -1,0 +1,31 @@
+A-041 evidence (hashmap): the NEW tests/unit/test_hashmap.c run, one test per process, against the ORIGINAL (Phase 5) hashmap.c
+(ASan+UBSan; each test has a 20 s alarm: 'timeout' means the original never finished)
+  PASS  test_basic_insert_get
+  PASS  test_keys_and_values
+hashmap_base: /home/claude/cbae/tests/unit/test_hashmap.c:28: check_table: Assertion `e->probe_dist == 0 && e->key == 0 && e->value == NULL' failed.
+  FAIL  test_update_and_remove  (signal 6)
+hashmap_base: /home/claude/cbae/tests/unit/test_hashmap.c:97: test_growth_rule: Assertion `cbae_hashmap_insert(&m, 7, (void *)2) == CBAE_OK && m.capacity == 16 && m.count == 11' failed.
+  FAIL  test_growth_rule  (signal 6)
+/home/claude/base/cbae/src/platform/hashmap.c:88:17: runtime error: member access within null pointer of type 'const struct cbae_hashmap_entry_t'
+  FAIL  test_zeroed_and_destroyed  (exit 1)
+  FAIL  test_sizes  (signal 14, timeout: it never finished)
+hashmap_base: /home/claude/cbae/tests/unit/test_hashmap.c:28: check_table: Assertion `e->probe_dist == 0 && e->key == 0 && e->value == NULL' failed.
+  FAIL  test_against_reference  (signal 6)
+  PASS  test_foreach_and_clear
+hashmap_base: /home/claude/cbae/tests/unit/test_hashmap.c:28: check_table: Assertion `e->probe_dist == 0 && e->key == 0 && e->value == NULL' failed.
+  FAIL  test_large  (signal 6)
+hashmap_base: /home/claude/cbae/tests/unit/test_hashmap.c:272: oom_body: Assertion `m.entries == NULL && m.capacity == 0 && m.count == 0' failed.
+  FAIL  test_allocation_failure  (signal 6)
+7 of 10 failed
+
+Reading the failures:
+  test_zeroed_and_destroyed   REAL DEFECT. A map of all zero bytes (or one that was destroyed) is dereferenced through a NULL table:
+                              get/remove/contains on it crash (`hm_hash(key, 0)` makes the index `key & SIZE_MAX`).
+  test_sizes                  REAL DEFECT. cbae_hashmap_init(&m, SIZE_MAX) loops forever (`cap <<= 1` reaches 0 and stays there);
+                              a request whose byte size wraps is not refused either.
+  test_allocation_failure     REAL DEFECT. A failed init leaves the caller's struct untouched, so a caller that destroys it after the
+                              error frees whatever garbage the struct held.
+  test_growth_rule            Behaviour: inserting a key that is already in a table at its load limit doubled the table for nothing.
+  test_update_and_remove, test_against_reference, test_large
+                              Cleanliness rule only: a slot emptied by remove keeps its old key and value (the table is correct;
+                              the new checker also requires a free slot to be all zero, which the new code guarantees).

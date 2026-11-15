@@ -1,5 +1,14 @@
 cmake_minimum_required(VERSION 3.20)
 
+# A sanitizer slows a test by a large factor (ASan a few times, TSan ten or more); the timeout is a guard
+# against a hang, not a performance criterion, so it scales with the build.
+set(CBAE_TEST_TIMEOUT 30)
+if(CBAE_SANITIZE STREQUAL "address")
+    set(CBAE_TEST_TIMEOUT 120)
+elseif(CBAE_SANITIZE STREQUAL "thread")
+    set(CBAE_TEST_TIMEOUT 400)
+endif()
+
 function(cbae_add_test name src)
     add_executable(${name} ${CMAKE_CURRENT_SOURCE_DIR}/${src})
     target_include_directories(${name} PRIVATE ${CMAKE_SOURCE_DIR}/include)
@@ -10,19 +19,44 @@ function(cbae_add_test name src)
     target_compile_options(${name} PRIVATE -UNDEBUG)
     target_link_libraries(${name} PRIVATE cbae_engine ${ARGN})
     add_test(NAME ${name} COMMAND ${name})
-    set_tests_properties(${name} PROPERTIES TIMEOUT 30)
+    set_tests_properties(${name} PROPERTIES TIMEOUT ${CBAE_TEST_TIMEOUT})
 endfunction()
 
 # ── Phase 1 — Foundation ──────────────────────────────────────────────────
 cbae_add_test(test_hashmap         unit/test_hashmap.c)
+target_link_options(test_hashmap PRIVATE -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free)
 cbae_add_test(test_arena_allocator unit/test_arena_allocator.c)
 cbae_add_test(test_string_pool     unit/test_string_pool.c)
+# the out-of-memory tests count and fail allocations by wrapping the allocator (tests/unit/alloc_inject.h)
+target_link_options(test_string_pool PRIVATE -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free)
 cbae_add_test(test_vector          unit/test_vector.c)
+target_link_options(test_vector PRIVATE -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free)
+cbae_add_test(test_logging          unit/test_logging.c)
+cbae_add_test(test_thread_pool      unit/test_thread_pool.c)
+# the thread pool tests make the allocator, thread creation and lock creation fail on demand (tests/unit/alloc_inject.h, and the wrappers in the test)
+target_link_options(test_thread_pool PRIVATE -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free,--wrap=pthread_create,--wrap=pthread_mutex_init,--wrap=pthread_cond_init)
 cbae_add_test(test_db_persistence  unit/test_db_persistence.c)
+# the db tests make SQLite's answers to the journal-mode query, the foreign-key query, the busy-timeout call and a busy lock different, and the wait between two tries instant (wrappers in the test)
+target_link_options(test_db_persistence PRIVATE -Wl,--wrap=sqlite3_column_text,--wrap=sqlite3_busy_timeout,--wrap=sqlite3_step,--wrap=sqlite3_sleep)
+cbae_add_test(test_sha256 unit/test_sha256.c)
+cbae_add_test(test_file_io unit/test_file_io.c)
+cbae_add_test(test_error           unit/test_error.c)
+cbae_add_test(test_config          unit/test_config.c)
+target_compile_definitions(test_config PRIVATE CBAE_SHIPPED_CONFIG="${CMAKE_SOURCE_DIR}/config/cbae.conf")
 
 # ── Phase 2 — Binary Loaders ──────────────────────────────────────────────
 cbae_add_test(test_pe_loader       unit/test_pe_loader.c  cbae_loader)
+target_link_options(test_pe_loader PRIVATE -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free)
+cbae_add_test(test_pe_hostile       unit/test_pe_hostile.c cbae_loader)
+cbae_add_test(test_elf_hostile      unit/test_elf_hostile.c cbae_loader)
 cbae_add_test(test_elf_loader      unit/test_elf_loader.c cbae_loader)
+target_link_options(test_elf_loader PRIVATE -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free)
+cbae_add_test(test_elf_real        unit/test_elf_real.c   cbae_loader)
+target_compile_definitions(test_elf_real PRIVATE CBAE_ELF_FIXTURES="${CMAKE_SOURCE_DIR}/tests/fixtures/elf")
+cbae_add_test(test_pe_boundaries   unit/test_pe_boundaries.c cbae_loader)
+cbae_add_test(test_pe_real         unit/test_pe_real.c    cbae_loader)
+target_link_options(test_pe_real PRIVATE -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free)
+target_compile_definitions(test_pe_real PRIVATE CBAE_PE_FIXTURES="${CMAKE_SOURCE_DIR}/tests/fixtures/pe")
 
 # ── Phase 3 — Disassembly & CFG ───────────────────────────────────────────
 cbae_add_test(test_disassembler      unit/test_disassembler.c      cbae_disasm cbae_loader)
@@ -36,6 +70,11 @@ cbae_add_test(test_cir_lifter        unit/test_cir_lifter.c        cbae_cir cbae
 cbae_add_test(test_ssa_construction  unit/test_ssa_construction.c  cbae_cir cbae_disasm cbae_loader)
 cbae_add_test(test_disasm_to_cir     unit/test_disasm_to_cir.c     cbae_cir cbae_disasm cbae_loader)
 cbae_add_test(test_cir_verifier      unit/test_cir_verifier.c      cbae_cir cbae_disasm cbae_loader)
+cbae_add_test(test_cir_serializer    unit/test_cir_serializer.c    cbae_cir cbae_disasm cbae_loader)
+# the serializer and builder tests make the allocator fail on demand and measure the largest request (tests/unit/alloc_inject.h)
+target_link_options(test_cir_serializer PRIVATE -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free)
+cbae_add_test(test_cir_builder_hostile unit/test_cir_builder_hostile.c cbae_cir cbae_disasm cbae_loader)
+target_link_options(test_cir_builder_hostile PRIVATE -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free)
 
 # ── Phase 5 — Dataflow Infrastructure ─────────────────────────────────────
 cbae_add_test(test_dominator_tree    unit/test_dominator_tree.c    cbae_dataflow cbae_cir cbae_disasm cbae_loader)
@@ -50,6 +89,12 @@ cbae_add_test(test_const_prop         unit/test_const_prop.c         cbae_datafl
 cbae_add_test(test_const_prop_soundness unit/test_const_prop_soundness.c cbae_dataflow cbae_cir cbae_disasm cbae_loader)
 cbae_add_test(test_ssa_verifier      unit/test_ssa_verifier.c      cbae_dataflow cbae_cir cbae_disasm cbae_loader)
 cbae_add_test(test_compiled_code      unit/test_compiled_code.c     cbae_dataflow cbae_cir cbae_disasm cbae_loader)
+cbae_add_test(test_dominance_oom      unit/test_dominance_oom.c     cbae_dataflow cbae_cir cbae_disasm cbae_loader)
+# the dominance tests fail every allocation the dominator, post-dominator, frontier and SSA verifier code makes, in turn (tests/unit/alloc_inject.h)
+target_link_options(test_dominance_oom PRIVATE -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free)
+cbae_add_test(test_dominance_contracts unit/test_dominance_contracts.c cbae_dataflow cbae_cir cbae_disasm cbae_loader)
+# dom_core.h is an internal header; this test exercises the numbering of the dominator tree directly (as test_graph_scc does for the SCCs).
+target_include_directories(test_dominance_contracts PRIVATE ${CMAKE_SOURCE_DIR}/src/dataflow)
 cbae_add_test(test_graph_scc         unit/test_graph_scc.c         cbae_dataflow cbae_cir cbae_disasm cbae_loader)
 # graph_scc / dom_core are internal headers; this test exercises them directly.
 target_include_directories(test_graph_scc PRIVATE ${CMAKE_SOURCE_DIR}/src/dataflow)

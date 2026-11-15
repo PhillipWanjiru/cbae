@@ -1,0 +1,4 @@
+LIBRARY KERNEL32.dll
+EXPORTS
+GetTickCount @ 676
+GetProcAddress @ 558
