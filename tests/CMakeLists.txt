@@ -1,12 +1,19 @@
 cmake_minimum_required(VERSION 3.20)
 
-# A sanitizer slows a test by a large factor (ASan a few times, TSan ten or more); the timeout is a guard
-# against a hang, not a performance criterion, so it scales with the build.
-set(CBAE_TEST_TIMEOUT 30)
-if(CBAE_SANITIZE STREQUAL "address")
-    set(CBAE_TEST_TIMEOUT 120)
+# The limit kills a test that hangs; it is not a performance criterion, so a slow machine must not fail a test that is only slow.
+# It is at least ten times the slowest test on the slowest machine measured so far. The slowest tests are the loader sweeps
+# (test_elf_real, test_elf_hostile); in a Debug build they take 8.5 s and 7.2 s on the 2.3 GHz sandbox, and the author's machine
+# runs them about 1.9 times slower (a 30 s limit failed test_elf_real there: A-055). Seconds on the sandbox, worst test per build:
+# Debug 8.5, Release 6.8, ASan 34.5, TSan 55.8. -DCBAE_TEST_TIMEOUT=<seconds> sets the limit by hand.
+set(CBAE_TEST_TIMEOUT "" CACHE STRING "Seconds one test may run before it is killed; empty: 300, with ASan 900, with TSan 1200")
+if(NOT CBAE_TEST_TIMEOUT STREQUAL "")
+    set(CBAE_TEST_LIMIT ${CBAE_TEST_TIMEOUT})
+elseif(CBAE_SANITIZE STREQUAL "address")
+    set(CBAE_TEST_LIMIT 900)
 elseif(CBAE_SANITIZE STREQUAL "thread")
-    set(CBAE_TEST_TIMEOUT 400)
+    set(CBAE_TEST_LIMIT 1200)
+else()
+    set(CBAE_TEST_LIMIT 300)
 endif()
 
 function(cbae_add_test name src)
@@ -19,7 +26,7 @@ function(cbae_add_test name src)
     target_compile_options(${name} PRIVATE -UNDEBUG)
     target_link_libraries(${name} PRIVATE cbae_engine ${ARGN})
     add_test(NAME ${name} COMMAND ${name})
-    set_tests_properties(${name} PROPERTIES TIMEOUT ${CBAE_TEST_TIMEOUT})
+    set_tests_properties(${name} PROPERTIES TIMEOUT ${CBAE_TEST_LIMIT})
 endfunction()
 
 # ── Phase 1 — Foundation ──────────────────────────────────────────────────

@@ -2,7 +2,7 @@
 
 For whoever continues this project: the author, or a new Claude session on another account. Read this first, then
 [ROADMAP.md](ROADMAP.md) and [audit/LEDGER.md](audit/LEDGER.md). Keep this file current at every checkpoint.
-Last updated: 2026-11-15.
+Last updated: 2026-11-16.
 
 ## 1. The project
 
@@ -39,14 +39,17 @@ Every delivery is a zip plus a block of shell commands for the author's machine 
 The code must build on both Capstone versions. As root, tests that rely on file-permission errors are unreliable. The
 sandbox VM restarts without warning: background jobs die, files under the home directory survive.
 
-## 4. State on 2026-11-15
+## 4. State on 2026-11-16
 
 **Phases 1–5 are complete and were verified by the author on DELTA-FORCE** (Phase 5: 29/29 tests). **Phase 4.5, the audit,
-is in progress.** Phases 6–10 are not started.
+is in progress (checkpoint 1 of 5).** Phases 6–10 are not started.
 
-Checkpoint 1 of Phase 4.5 is implemented. Measured in the sandbox on the tree in this repository: 44/44 tests pass under
-Debug, Release (zero warnings) and ASan + UBSan + LeakSanitizer. **Not yet re-run:** the TSan and Valgrind gates since the
-new tests were added, and the author's own build of this version.
+Checkpoint 1 of Phase 4.5 is implemented. The author's first run of it on DELTA-FORCE (2026-11-16, Debug) passed 43 of 44
+tests: `test_elf_real` hit its 30 s limit on a machine about 1.9 times slower than the sandbox (A-055). The first TSan run of
+the new tests then failed `test_thread_pool` (A-056). Both were problems of the tests and the build, not of the library, and
+both are fixed. Measured in the sandbox on the tree in this repository: 44/44 tests under all five gates (Debug, Release with
+zero warnings, ASan + UBSan + LeakSanitizer, TSan, Valgrind). **Not yet done:** the author has not run the fixed version, and
+the work listed below.
 
 Audit items worked on in checkpoint 1 (IDs are not contiguous; A-044 and A-053 are not recorded). The ledger
 (`docs/audit/LEDGER.md`) holds A-001 to A-030 only; rows for the rest are still to be written from re-measured facts.
@@ -63,19 +66,24 @@ Audit items worked on in checkpoint 1 (IDs are not contiguous; A-044 and A-053 a
 | A-039 | file I/O | A-051 | SSA construction to be made iterative (open, Checkpoint 3) |
 | A-040 | vector | A-052 | PE section-length consumers (open, Checkpoint 2) |
 | A-041 | hashmap | A-054 | out-of-memory sweeps for the Phase 5 analyses (open) |
+| A-055 | test time limits; SHA-256 cost in Debug builds | A-056 | thread-pool test under TSan |
 
 ### Remaining in checkpoint 1, in order
 
-1. Mutation campaigns for the dominance code: write `tools/mutation/mutants_dom_core.py`, `mutants_dominator_tree.py`,
-   `mutants_post_dominator_tree.py` (tests: `test_dominance_oom`, `test_dominance_contracts`, `test_dominator_tree`,
-   `test_post_dominator_tree`, `test_ssa_verifier`, `test_graph_scc`, `test_alias_analysis`, `test_compiled_code`), run, and
-   classify every survivor. Analysis already done: of the six arena checks in each tree builder only the last (`children`)
-   can matter, because a failed arena allocation consumes nothing and the last request is the largest (the other five are
-   equivalent mutants); the bound on `a` in `dominates` is equivalent by arena layout; mutants that remove the
-   `DOM_MAX_NODES` limit inside `dom_csr_build` must not be run in the ASan tree (they would allocate gigabytes).
+1. Mutation campaigns for the dominance code. Four modules are written and validated (every `old` text occurs once):
+   `tools/mutation/mutants_dom_core.py` (91 mutants), `mutants_dominator_tree.py` (92), `mutants_post_dominator_tree.py` (121)
+   and `mutants_ssa_verifier_dominance.py` (69), with the tests `test_dominance_contracts`, `test_dominator_tree`,
+   `test_post_dominator_tree`, `test_dominance_oom`, `test_alias_analysis`, `test_compiled_code`, `test_ssa_verifier`. The
+   campaigns were started on 2026-11-16 and their results are not recorded yet: run them in the snapshot (section 6), classify
+   every survivor, and keep the logs in `docs/audit/evidence/mutation/`. Analysis already done: of the six arena checks in each
+   tree builder only the last (`children`) can matter, because a failed arena allocation consumes nothing and the last request
+   is the largest (the other five are equivalent mutants); the bound on `a` in `dominates` is equivalent by arena layout;
+   mutants that remove the `DOM_MAX_NODES` limit inside `dom_csr_build` must not be run in the ASan tree (they would allocate
+   gigabytes). `test_thread_pool.c` changed (A-056): re-run the thread-pool campaign (`mutants_thread_pool.py`).
 2. A-050: tighten the lenient assertions in `tests/unit/test_disasm_to_cir.c` and `tests/unit/test_loader_to_disasm.c`.
 3. Vector and hashmap mutation modules and campaigns.
-4. Run `tests/run_gates.sh` for all five gates, then a clean full re-run of the serializer campaign (302 mutants).
+4. Run `tests/run_gates.sh` for all five gates (done once on 2026-11-16 with 44/44 in each; repeat after the last change),
+   then a clean full re-run of the serializer campaign (302 mutants).
 5. Write the ledger rows (A-031 to A-054) and `docs/architecture/PHASE4.5.md`; delete `tools/mutation/__pycache__`.
    Mutants already classified as equivalent, for the rows: logging L04 L07 L31 L64 L75; thread pool T10 T29; PE P04 P16
    P50 P157 P164; database C15 C48 C50 X01 X13 X24 X31 S21 S26 Q36; builder B38 B124 (B47 is killed only by Valgrind);
@@ -115,7 +123,9 @@ Phase 10: QEMU snapshots. Driver loading on real machines: EV code-signing certi
   consume space.
 - Build flags: `-Wall -Wextra -Wpedantic -fno-strict-aliasing`, `-std=gnu11`. The Release gate fails on any warning. Tests
   are built with `-UNDEBUG` so `assert` stays active. Binaries land in `build/bin`; run tests from `build/tests`.
-  Test timeouts: 30 s Debug, 120 s ASan, 400 s TSan.
+  A test's time limit is a hang guard, not a performance criterion: 300 s (Debug, Release), 900 s (ASan), 1200 s (TSan), or
+  `-DCBAE_TEST_TIMEOUT=<seconds>`. Keep it at least ten times the slowest test on the slowest machine measured; the author's
+  machine runs the tests about 1.9 times slower than the sandbox (A-055). SHA-256 is compiled with `-O2` even in a Debug build.
 - Test helpers in `tests/unit/`: `alloc_inject.h` (include first; one per executable), `oom_sweep.h` (fail every allocation
   in turn, or every arena size), `cir_test_util.h`, `cir_random.h`, `dom_reference.h` (brute-force dominators),
   `pe_builder.h` / `elf_builder.h` and the `*_random.h` generators.
@@ -136,6 +146,9 @@ Phase 10: QEMU snapshots. Driver loading on real machines: EV code-signing certi
 ## 7. Gotchas
 
 - After editing `tests/CMakeLists.txt` run `cmake -S . -B build` again.
+- TSan's runtime starts a thread of its own at the first `pthread_create` and keeps it: a test that counts threads must start
+  and join one thread before its first count (A-056).
+- Time every new heavy test on the author's machine as well as in the sandbox; see A-055.
 - `test_dominance_oom` needs the linker `--wrap` options already set in `tests/CMakeLists.txt`.
 - Some editing tools turn a backslash followed by `u` and four hex digits into the character itself. After writing a file,
   check `grep -nP '[^\x00-\x7F]' FILE`; only comment dividers and the existing em dashes belong.
@@ -162,8 +175,11 @@ A prompt to paste into the new session:
 ## 9. Repository and delivery
 
 - GitHub: https://github.com/PhillipWanjiru/cbae. `main` holds one commit per delivery, from Phases 1–2 on; tags
-  `phase-1-2`, `phase-3`, `phase-4`, `phase-5` mark finished phases; branches `archive/*` hold the author's earlier Desktop
-  copies. Commits are authored as `PhillipWanjiru`.
+  `phase-1-2`, `phase-3`, `phase-4`, `phase-5` mark finished phases (`phase-4.5-cp1-wip` marks the first Phase 4.5 tree);
+  branches `archive/*` hold the author's earlier Desktop copies. Commits are authored as `PhillipWanjiru`.
+- On 2026-11-16 the author pushed `main`, the five tags and `archive/desktop-cbae` (the Desktop copy of Phases 1–5). The branch
+  `archive/predecessor` (the earlier folder "where it all began") is not pushed yet: the first attempt used the placeholder
+  folder name, so nothing was archived.
 - Commit at every checkpoint with a message like `Phase 4.5 checkpoint 2: ...`, add a row to `CHANGELOG.md` and update
   section 4 of this file and `docs/ROADMAP.md` in the same commit.
 - If the session cannot push, deliver the whole repository folder as a zip, `.git` included. The author unzips it and runs

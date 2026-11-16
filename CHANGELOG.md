@@ -5,6 +5,26 @@ The phase plan is in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Phase 4.5 — audit of Phases 1–4 (in progress)
 
+### Checkpoint 1 — first run on the author's machine: two test fixes (2026-11-16)
+
+The author's first run of the repository on DELTA-FORCE (Debug, GCC 15.2.0, Capstone 5.0.7, SQLite 3.46.1) passed 43 of 44
+tests, and the first TSan run of the new tests failed one. Both were problems of the tests and the build; the library was not
+at fault. Each was reproduced first and the evidence is in `docs/audit/evidence/`.
+
+- **A-055** — `test_elf_real` hit its 30 s limit on a machine about 1.9 times slower than the sandbox. The limits are now hang
+  guards with a wide margin (300 s Debug and Release, 900 s ASan, 1200 s TSan; `-DCBAE_TEST_TIMEOUT=<seconds>` sets one). SHA-256,
+  85% of that test's time, is compiled with `-O2` in a Debug build: test_elf_real takes 8.5 s instead of 16 s in Debug and
+  34.5 s instead of 70 s under ASan, and the whole Debug suite runs in about half the time.
+- **A-056** — `test_thread_pool` counts the threads of the process and failed under TSan, whose runtime starts a thread of its
+  own at the first `pthread_create`. The test now starts and joins one thread before its first count. No library code changed.
+- The CMake summary line lists all seven layers.
+- Mutation modules for the dominance code (`mutants_dom_core.py`, `mutants_dominator_tree.py`, `mutants_post_dominator_tree.py`,
+  `mutants_ssa_verifier_dominance.py`: 373 mutants), written and validated; the campaigns are still to be run.
+- Three redundant conditions removed from the dominator code, each implied by what follows it (`n == 0` in
+  `dom_core_compute`; `block_count == 0` in the tree and the frontier destroy functions).
+- Sandbox, all five gates on this tree: Debug, Release (no warnings), ASan + UBSan + LeakSanitizer, TSan and Valgrind pass,
+  44/44 tests each.
+
 ### Checkpoint 1 — implemented, verification under way (2026-11-15)
 
 Audit of Phases 1–2 and of the Phase 4–5 code they touch. Each item starts with a test that fails on the original code.

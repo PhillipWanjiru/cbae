@@ -77,6 +77,12 @@ add_library(cbae_platform STATIC
     src/platform/platform_linux.c
 )
 target_link_libraries(cbae_platform PUBLIC Threads::Threads)
+# Every image that is loaded is hashed over all of its bytes. Unoptimised (-O0) that hash was 85% of the time of the real-file
+# sweeps (callgrind: tests/audit evidence A-055), so it is optimised in a Debug build too. It is a pure function, held to
+# known-answer vectors by test_sha256.
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set_source_files_properties(src/platform/sha256.c PROPERTIES COMPILE_OPTIONS "-O2")
+endif()
 
 # ── LAYER 2: cbae_db ──────────────────────────────────────────────────────────
 add_library(cbae_db STATIC
@@ -200,5 +206,5 @@ add_subdirectory(tests)
 message(STATUS "CBAE ${PROJECT_VERSION} -- build type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "  SQLite3:  ${SQLite3_LIBRARIES}")
 message(STATUS "  Capstone: ${CAPSTONE_LIBRARIES}")
-message(STATUS "  Layers:   platform -> db -> engine -> loader -> disasm")
+message(STATUS "  Layers:   platform -> db -> engine -> loader -> disasm -> cir -> dataflow")
 message(STATUS "  Rust:     ${WITH_RUST} (cmake -DWITH_RUST=ON .. to enable)")

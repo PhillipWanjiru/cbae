@@ -1,0 +1,37 @@
+A-055: test_elf_real timed out on the author's machine (found 2026-11-16, from the log of the first run there)
+
+1. The failure. The author's machine (GCC 15.2.0, Capstone 5.0.7, SQLite 3.46.1), cmake -DCMAKE_BUILD_TYPE=Debug, ctest run one test at a time:
+
+     13/44 Test #13: test_pe_hostile ..................   Passed    9.54 sec
+     14/44 Test #14: test_elf_hostile .................   Passed   19.25 sec
+     16/44 Test #16: test_elf_real ....................***Timeout  30.03 sec
+     17/44 Test #17: test_pe_boundaries ...............   Passed    3.63 sec
+     18/44 Test #18: test_pe_real .....................   Passed    9.02 sec
+     98% tests passed, 1 tests failed out of 44       Total Test time (real) = 85.69 sec
+
+   The same tests in the sandbox (2.3 GHz Xeon, gcc 13.3), same Debug build, run alone:
+   test_elf_real 15.96 s, test_elf_hostile 10.50 s, test_pe_hostile 5.24 s, test_pe_real 4.48 s.
+   The author's machine is 1.8 to 2.0 times slower on all four. The limit was 30 s: 1.9 times the sandbox's slowest test.
+   Nothing was wrong with the loader; the limit was a performance criterion in the guise of a hang guard.
+
+2. Reproduction (failing first). The original tree, Debug, the sandbox CPU shared 50/50 with a busy loop (taskset -c 0):
+
+     16 - test_elf_real (Timeout)          Total Test time (real) = 30.05 sec
+
+3. Where the time goes (callgrind, original Debug build, CBAE_TEST_QUICK=1, 9,000 damaged copies and 70,366 prefixes):
+     27,134,267,738 instructions in all; 23,018,297,120 (84.8%) in sha256.c:compress, unoptimised.
+     cbae_sha256 was called 7,836 times from cbae_image_adopt_file (the loader hashes every image it accepts) and 7,836
+     times from elf_check_image (the test checks img->sha256 against its own hash of the file): 5.84 G instructions each.
+   The loader's hash is part of loading. Compiling that one file with -O2 in a Debug build takes the run from 27.13 G to
+   15.75 G instructions (compress: 23.02 G to 11.66 G, still 74% of the run; the test's own second hash is half of that).
+
+4. The change. CMakeLists.txt: sha256.c is compiled with -O2 in a Debug build. tests/CMakeLists.txt: the limit is a hang guard
+   with at least ten times the slowest test on the slowest machine measured: 300 s (Debug, Release), 900 s (ASan), 1200 s (TSan),
+   or -DCBAE_TEST_TIMEOUT=<seconds>. All 44 tests carry it (read back from CTestTestfile.cmake in every gate tree).
+
+5. After, sandbox, each test alone (seconds, before in brackets):
+                     test_elf_real  test_elf_hostile  test_pe_hostile  test_pe_real
+     Debug              8.51 (15.96)   7.21 (10.50)     2.74 (5.24)     2.26 (4.48)
+     ASan + UBSan      34.5  (70.2)   22.4  (34.0)    12.4 (23.9)      9.9 (19.9)
+     TSan              49.9           55.8             15.5            13.2
+   The fixed tree under ctest on the same half-speed CPU as in 2: Passed, 17.58 sec.

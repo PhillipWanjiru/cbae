@@ -67,7 +67,7 @@ cbae_err_t cbae_dom_tree_build(const cbae_cir_function_t *func,
 }
 
 void cbae_dom_tree_destroy(cbae_dom_tree_t *dt) {
-    if (!dt || dt->block_count == 0) return;                /* nothing to release in an empty tree */
+    if (!dt) return;
     for (uint32_t i = 0; i < dt->block_count; i++)
         cbae_vector_destroy(&dt->children[i]);
 }
@@ -160,7 +160,7 @@ cbae_err_t cbae_dom_frontier_compute(const cbae_dom_tree_t *dt,
 }
 
 void cbae_dom_frontier_destroy(cbae_dom_frontier_t *df) {
-    if (!df || df->block_count == 0) return;                /* nothing to release in an empty frontier */
+    if (!df) return;
     frontier_free(df->frontier, df->block_count);
     memset(df, 0, sizeof(*df));
 }

@@ -1,0 +1,24 @@
+A-056: test_thread_pool failed under TSan (found 2026-11-16, the first TSan run since the thread pool tests were rewritten)
+
+1. The failure, tests/run_gates.sh tsan (sandbox, gcc 13.3, libtsan from the same release):
+
+     6 - test_thread_pool (Subprocess aborted)                  0.26 sec
+     test_thread_pool.c:115: test_arguments: Assertion `count_threads() == baseline + CBAE_THREAD_POOL_MAX_THREADS' failed.
+
+   It is not a data race: TSan reported nothing. The test counts the threads of the process (/proc/self/task) before and after
+   creating a pool, and the count was one more than the pool's threads. The other 43 tests passed under TSan.
+
+2. The cause, with a probe that does not involve the pool (a program that starts three threads and joins them):
+
+                                 start   after 3 creates   after the joins
+     plain build                   1            4                  1
+     -fsanitize=thread             1            5                  2
+
+   TSan's runtime starts a thread of its own at the first pthread_create and keeps it. A baseline taken before the first
+   thread is started is one short from then on; the test took its first baseline before that.
+
+3. The change (tests/unit/test_thread_pool.c): warm_up_threads() starts and joins one thread (with the real pthread_create, so the
+   failure injection of the test is not involved) and lets the count settle before the first count. Every baseline then includes
+   the runtime's thread, whichever sanitizer is in use. No library code changed.
+
+4. After: test_thread_pool passes under TSan (all of its tests, including the refused-thread and allocation-failure sweeps).

@@ -82,6 +82,23 @@ static void expect_threads(int baseline) {
     assert(!"threads were left running");
 }
 
+/* A sanitizer's runtime can start a thread of its own the first time the program starts one, and keep it: TSan does. Every count
+ * taken before that would then be one short for good, so one thread is started and joined before the first count, and the
+ * count is let settle (a joined thread can take a moment to leave /proc). */
+static void *idle(void *arg) { return arg; }
+static void warm_up_threads(void) {
+    pthread_t t;
+    assert(__real_pthread_create(&t, NULL, idle, NULL) == 0);
+    assert(pthread_join(t, NULL) == 0);
+    int last = count_threads();
+    for (int i = 0, same = 0; i < 5000 && same < 20; i++) {
+        usleep(1000);
+        const int now = count_threads();
+        same = now == last ? same + 1 : 0;
+        last = now;
+    }
+}
+
 static void sleep_ms(long ms) {
     struct timespec ts = { ms / 1000, (ms % 1000) * 1000000L };
     nanosleep(&ts, NULL);
@@ -364,6 +381,7 @@ static void test_allocation_failure(void) {
 
 int main(void) {
     printf("=== test_thread_pool ===\n");
+    warm_up_threads();
     test_arguments();
     test_every_task_runs_once();
     test_order_with_one_worker();

@@ -158,7 +158,7 @@ cbae_err_t dom_core_compute(const dom_graph_t *g, const char *what,
                             uint32_t *idom, uint32_t *rpo_order,
                             uint32_t *rpo_number) {
     const uint32_t n = g->n;
-    if (n == 0 || g->root >= n)
+    if (g->root >= n)                       /* also when there are no nodes: no root is one of them */
         CBAE_RETURN_ERR(CBAE_ERR_INVALID, "%s: empty graph or bad root", what);
 
     CBAE_CHECK(compute_rpo(g, what, rpo_order, rpo_number));
