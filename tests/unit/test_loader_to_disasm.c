@@ -69,16 +69,39 @@ static void write_synthetic_pe(void) {
     pb_mini_free(&m);
 }
 
+/* What the decoder must report for each instruction of FUNC_BYTES, in order: where it starts, how long it is, its
+ * mnemonic, its class and its operands (a register, or an immediate). Only fields that do not depend on the Capstone
+ * version are checked here; the decoder's own test pins the others. */
+typedef struct { cbae_operand_kind_t kind; int64_t v; } opnd_exp_t;     /* v: the register, or the immediate */
+typedef struct {
+    uint8_t off, len;
+    const char *mnemonic;
+    cbae_insn_class_t iclass;
+    uint8_t nops;
+    opnd_exp_t op[2];
+} insn_exp_t;
+
+static const insn_exp_t EXPECT[] = {
+    {  0, 1, "push", CBAE_ICLASS_STACK, 1, {{CBAE_OPND_REG, CBAE_REG_RBP}} },
+    {  1, 3, "mov",  CBAE_ICLASS_MOV,   2, {{CBAE_OPND_REG, CBAE_REG_RBP}, {CBAE_OPND_REG, CBAE_REG_RSP}} },
+    {  4, 4, "sub",  CBAE_ICLASS_ARITH, 2, {{CBAE_OPND_REG, CBAE_REG_RSP}, {CBAE_OPND_IMM, 0x20}} },
+    {  8, 1, "nop",  CBAE_ICLASS_NOP,   0, {{0, 0}} },
+    {  9, 3, "mov",  CBAE_ICLASS_MOV,   2, {{CBAE_OPND_REG, CBAE_REG_RSP}, {CBAE_OPND_REG, CBAE_REG_RBP}} },
+    { 12, 1, "pop",  CBAE_ICLASS_STACK, 1, {{CBAE_OPND_REG, CBAE_REG_RBP}} },
+    { 13, 1, "ret",  CBAE_ICLASS_RET,   0, {{0, 0}} },
+};
+#define N_EXPECT (sizeof(EXPECT) / sizeof(EXPECT[0]))
+
 static void t_full_pipeline(void) {
     cbae_binary_image_t *img = NULL;
     assert(cbae_pe_load(g_tmp, &img) == CBAE_OK);
     assert(img != NULL);
     assert(img->entry_point == IBASE + 0x1000);
 
-    /* Confirm Phase 2 mapped the bytes correctly before handing off. */
+    /* Phase 2 must have mapped every byte of the function, in order, at the entry point. */
     const uint8_t *p = cbae_image_va_to_ptr(img, img->entry_point);
     assert(p != NULL);
-    assert(p[0] == 0x55); /* push rbp -- first byte of our function */
+    assert(memcmp(p, FUNC_BYTES, FUNC_LEN) == 0);
 
     cbae_disassembler_t *d;
     assert(cbae_disasm_create(CBAE_ARCH_X86_64, &d) == CBAE_OK);
@@ -89,31 +112,51 @@ static void t_full_pipeline(void) {
     cbae_cfg_t cfg;
     assert(cbae_cfg_build(img, d, img->entry_point, &arena, &cfg) == CBAE_OK);
 
-    /* Straight-line prologue/epilogue -> exactly one basic block. */
+    /* Straight-line prologue/epilogue -> exactly one basic block, found by its start address only. */
     assert(cbae_cfg_block_count(&cfg) == 1);
-
     cbae_basic_block_t *b = cbae_cfg_block_at(&cfg, img->entry_point);
     assert(b != NULL);
-    assert(b->instruction_count == 7);
+    assert(cbae_cfg_block_at_index(&cfg, 0) == b);
+    assert(cbae_cfg_block_at_index(&cfg, 1) == NULL);
+    assert(cbae_cfg_block_at(&cfg, img->entry_point + 1) == NULL);
+    assert(b->start_addr == img->entry_point);
+    assert(b->end_addr == img->entry_point + FUNC_LEN);
+    assert(b->instruction_count == N_EXPECT);
     assert(b->ends_in_ret);
+    assert(!b->ends_in_call && !b->ends_in_unresolved_branch);
     assert(b->successor_count == 0);
 
-    /* Verify the exact instruction sequence Phase 3 decoded matches
-     * what Phase 2 handed it, end to end. */
-    assert(b->instructions[0].iclass == CBAE_ICLASS_STACK); /* push rbp */
-    assert(b->instructions[1].iclass == CBAE_ICLASS_MOV);   /* mov rbp,rsp */
-    assert(b->instructions[2].iclass == CBAE_ICLASS_ARITH); /* sub rsp,0x20 */
-    assert(b->instructions[3].iclass == CBAE_ICLASS_NOP);
-    assert(b->instructions[4].iclass == CBAE_ICLASS_MOV);   /* mov rsp,rbp */
-    assert(b->instructions[5].iclass == CBAE_ICLASS_STACK); /* pop rbp */
-    assert(b->instructions[6].iclass == CBAE_ICLASS_RET);
+    /* The exact instruction sequence Phase 3 decoded from what Phase 2 handed it, end to end. */
+    uint32_t covered = 0;
+    for (uint32_t i = 0; i < N_EXPECT; i++) {
+        const insn_exp_t *e = &EXPECT[i];
+        const cbae_instruction_t *in = &b->instructions[i];
+        assert(e->off == covered);
+        assert(in->address == img->entry_point + e->off);
+        assert(in->length == e->len);
+        assert(memcmp(in->raw, FUNC_BYTES + e->off, e->len) == 0);
+        assert(strcmp(in->mnemonic, e->mnemonic) == 0);
+        assert(in->iclass == e->iclass);
+        assert(in->operand_count == e->nops);
+        for (uint8_t k = 0; k < e->nops; k++) {
+            assert(in->operands[k].kind == e->op[k].kind);
+            if (e->op[k].kind == CBAE_OPND_REG) assert((int64_t)in->operands[k].u.reg.reg == e->op[k].v);
+            else                                 assert(in->operands[k].u.imm.value == e->op[k].v);
+        }
+        /* only the return is a branch, and it has no direct target */
+        const bool is_ret = e->iclass == CBAE_ICLASS_RET;
+        assert(in->is_ret == is_ret && in->is_branch == is_ret);
+        assert(!in->is_call && !in->is_conditional && !in->branch_target_is_direct);
+        covered += e->len;
+    }
+    assert(covered == FUNC_LEN);
 
     cbae_cfg_destroy(&cfg);
     cbae_arena_destroy(&arena);
     cbae_disasm_destroy(&d);
     cbae_image_destroy(&img);
-    printf("  [PASS] full pipeline: cbae_pe_load -> cbae_cfg_build, "
-           "1 block, 7 instructions, correct sequence\n");
+    printf("  [PASS] full pipeline: cbae_pe_load -> cbae_cfg_build, 1 block, 7 instructions, each checked for "
+           "address, bytes, mnemonic, class and operands\n");
 }
 
 int main(void) {

@@ -38,7 +38,7 @@ oracles; mutation-test the fix; keep the evidence in `docs/audit/evidence/`.
 
 | Checkpoint | Scope | Status |
 |---|---|---|
-| 1 | Phases 1–2 (platform, database, loaders), CIR serializer and builder, dominator out-of-memory handling | implemented; 44/44 tests pass under all five gates (Debug, Release, ASan/UBSan, TSan, Valgrind); the first run on the author's machine found two test-only problems, fixed (A-055, A-056); still to do: mutation campaigns for the dominance code and the vector and hashmap, A-050, ledger rows |
+| 1 | Phases 1–2 (platform, database, loaders), CIR serializer and builder, dominator out-of-memory handling | implemented; 44/44 tests pass under all five gates (Debug, Release, ASan/UBSan, TSan, Valgrind); the first two runs on the author's machine found test-only problems, fixed (A-055, A-056, A-057); also builds and passes with Capstone 5.0.7 (A-058); still to do: mutation campaigns for the dominance code (running) and the vector and hashmap, A-050 (half done), ledger rows |
 | 2 | Phase 3: CBAE-owned instruction model, function-boundary finder scored against the unwind table, ELF relocation application, call-graph import, CFG builder hardening | not started |
 | 3 | CIR vocabulary and verifier: flags, condition codes, comparisons, extensions, select, switch, wider integers; typed phis; serializer v2; simplifier; iterative SSA | not started |
 | 4 | New lifter (memory operands, narrow registers, unmodelled instructions, flags), differential tests against native execution, larger compiled corpus | not started |

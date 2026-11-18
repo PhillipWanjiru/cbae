@@ -11,6 +11,7 @@
  * that, with the strongest check available: an accepted blob must serialize back to the same bytes.
  */
 #include "alloc_inject.h"
+#include "cir_compare.h"
 #include "oom_sweep.h"
 #include "cir/cir_builder.h"
 #include "cir/cir_printer.h"
@@ -165,55 +166,6 @@ static mfunc_t blank_model(void) {
     m.magic = 0x52494243u; m.version = 1; m.entry = 0x2000ull;
     memcpy(m.name, "Blank", 5);
     return m;
-}
-
-/* ── an independent structural comparison ─────────────────────────────── */
-
-static uint32_t vid(const cbae_cir_value_t *v) { return v ? v->id : NO_VALUE; }
-
-static void same_function(const cbae_cir_function_t *a, const cbae_cir_function_t *b) {
-    assert(a->entry_addr == b->entry_addr && strcmp(a->name, b->name) == 0);
-    assert(cbae_vector_count(&a->values) == cbae_vector_count(&b->values));
-    assert(cbae_vector_count(&a->blocks) == cbae_vector_count(&b->blocks));
-    assert(a->next_value_id == b->next_value_id && a->next_insn_id == b->next_insn_id && a->next_block_id == b->next_block_id);
-    for (size_t i = 0; i < cbae_vector_count(&a->values); i++) {
-        const cbae_cir_value_t *x = *(cbae_cir_value_t **)cbae_vector_at(&a->values, i);
-        const cbae_cir_value_t *y = *(cbae_cir_value_t **)cbae_vector_at(&b->values, i);
-        assert(x != y && x->id == y->id && x->kind == y->kind && x->type.kind == y->type.kind);
-        switch (x->kind) {
-            case CIR_VAL_CONST:       assert(x->u.const_val == y->u.const_val); break;
-            case CIR_VAL_PARAM:       assert(x->u.param_reg == y->u.param_reg); break;
-            case CIR_VAL_INSN_RESULT: assert(x->u.def_insn->id == y->u.def_insn->id && y->u.def_insn->result == y); break;
-            case CIR_VAL_REG_ENTRY:   assert(x->u.reg_entry.reg == y->u.reg_entry.reg && x->u.reg_entry.block_id == y->u.reg_entry.block_id); break;
-            default: assert(!"a value of an unknown kind");
-        }
-    }
-    for (size_t bi = 0; bi < cbae_vector_count(&a->blocks); bi++) {
-        const cbae_cir_block_t *x = *(cbae_cir_block_t **)cbae_vector_at(&a->blocks, bi);
-        const cbae_cir_block_t *y = *(cbae_cir_block_t **)cbae_vector_at(&b->blocks, bi);
-        assert(x != y && x->id == y->id && x->start_addr == y->start_addr);
-        assert(x->successor_count == y->successor_count && x->instruction_count == y->instruction_count);
-        assert(y->instruction_capacity >= y->instruction_count && (y->instruction_count == 0 || y->instructions));   /* room to build on */
-        for (uint32_t i = 0; i < x->successor_count; i++) assert(x->successors[i] == y->successors[i]);
-        assert(cbae_vector_count(&x->predecessors) == cbae_vector_count(&y->predecessors));
-        for (size_t i = 0; i < cbae_vector_count(&x->predecessors); i++)
-            assert(*(uint32_t *)cbae_vector_at(&x->predecessors, i) == *(uint32_t *)cbae_vector_at(&y->predecessors, i));
-        for (uint32_t ii = 0; ii < x->instruction_count; ii++) {
-            const cbae_cir_instruction_t *p = x->instructions[ii], *q = y->instructions[ii];
-            assert(p != q && p->id == q->id && p->opcode == q->opcode && vid(p->result) == vid(q->result));
-            assert(p->operand_count == q->operand_count && p->source_addr == q->source_addr);
-            for (uint8_t o = 0; o < p->operand_count; o++) assert(vid(p->operands[o]) == vid(q->operands[o]));
-            for (uint8_t o = p->operand_count; o < CIR_MAX_OPERANDS; o++) assert(q->operands[o] == NULL);
-            assert((p->call_target_name == NULL) == (q->call_target_name == NULL));
-            if (p->call_target_name) assert(strcmp(p->call_target_name, q->call_target_name) == 0);
-            assert(p->branch_true_block == q->branch_true_block && p->branch_false_block == q->branch_false_block);
-            assert(p->phi_incoming_count == q->phi_incoming_count);
-            for (uint32_t k = 0; k < p->phi_incoming_count; k++) {
-                assert(vid(p->phi_incoming_values[k]) == vid(q->phi_incoming_values[k]));
-                assert(p->phi_incoming_blocks[k] == q->phi_incoming_blocks[k]);
-            }
-        }
-    }
 }
 
 /* ── functions to serialize ───────────────────────────────────────────── */
@@ -423,7 +375,7 @@ static void round_trip(const cbae_cir_function_t *orig) {
     assert(cbae_arena_init(&a2, 256 * 1024) == CBAE_OK);
     cbae_cir_function_t *copy = NULL;
     assert(cbae_cir_deserialize_function(blob, n, &a2, &copy) == CBAE_OK && copy);
-    same_function(orig, copy);
+    cir_same_function(orig, copy);
     uint8_t *blob2 = NULL;
     size_t n2 = 0;
     assert(cbae_cir_serialize_function(copy, &blob2, &n2) == CBAE_OK);
@@ -1021,7 +973,7 @@ static cbae_err_t des_body(void *vctx, uint64_t failing) {
         return rc;
     }
     ai_disarm();
-    same_function(c->orig, f);
+    cir_same_function(c->orig, f);
     cbae_cir_function_destroy(f);
     return CBAE_OK;
 }
@@ -1033,7 +985,7 @@ static cbae_err_t arena_body(void *vctx, size_t bytes) {
     cbae_cir_function_t *f = (cbae_cir_function_t *)1;
     const cbae_err_t rc = cbae_cir_deserialize_function(c->blob, c->n, &a, &f);
     if (rc == CBAE_OK) {
-        same_function(c->orig, f);
+        cir_same_function(c->orig, f);
         cbae_cir_function_destroy(f);
     } else {
         assert(rc == CBAE_ERR_OOM && f == NULL);                     /* a full arena is out of memory, not a malformed blob */

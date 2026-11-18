@@ -54,11 +54,11 @@ if(NOT CAPSTONE_FOUND)
     message(FATAL_ERROR "Capstone not found. Install libcapstone-dev.")
 endif()
 
-include_directories(
-    ${CMAKE_SOURCE_DIR}/include
-    ${SQLite3_INCLUDE_DIRS}
-    ${CAPSTONE_INCLUDE_DIRS}
-)
+include_directories(${CMAKE_SOURCE_DIR}/include)
+# The headers of the libraries we link are not ours: their warnings are not reported. Capstone 5's capstone.h trips -Wpedantic
+# ("enumerator values outside the range of int"), which would fail the zero-warning Release gate when Capstone is not installed in a
+# directory the compiler already treats as a system directory (A-058).
+include_directories(SYSTEM ${SQLite3_INCLUDE_DIRS} ${CAPSTONE_INCLUDE_DIRS})
 
 # ── LAYER 1: cbae_platform ────────────────────────────────────────────────────
 # cbae_error.c lives here -- it has no dependencies and is called by every

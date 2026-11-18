@@ -1,0 +1,27 @@
+A-058: the whole tree built and tested against Capstone 5.0.7; warnings from Capstone's own header (found 2026-11-17)
+
+1. Why. The sandbox has Capstone 4.0.2; the author's machine has 5.0.7 (HANDOFF section 3: the code must build on both). Until now
+   the sandbox could only test the first. Capstone 5.0.7 was installed from its Python wheel into a scratch directory
+   (pip install --target DIR capstone==5.0.7: headers and libcapstone.so), and the tree was configured against that copy
+   (HANDOFF section 7 gives the commands).
+
+2. Debug build and the whole suite against Capstone 5.0.7: 44/44 tests pass, including the stricter test_loader_to_disasm (A-050).
+   Nothing in the library or the tests depends on the Capstone version.
+
+3. The build printed three warnings, none from CBAE code, one for each source that includes the Capstone header:
+
+     capstone.h:191:30: warning: ISO C restricts enumerator values to range of 'int' before C2X [-Wpedantic]
+       191 |         CS_MODE_BIG_ENDIAN = 1U << 31,  ///< big-endian mode
+
+   The compiler does not report warnings of headers in a system directory, which is why the author's builds, with Capstone in
+   /usr/include, show none (the log of 2026-11-17). With Capstone anywhere else the warnings appear, and the Release gate, which
+   fails on any warning, would fail.
+
+4. The change (CMakeLists.txt): the include directories of SQLite and Capstone are added with include_directories(SYSTEM ...).
+
+5. After, against the same Capstone 5.0.7 copy (a directory the compiler does not treat as a system directory), sandbox:
+
+     Debug    0 warnings   44/44 tests pass
+     Release  0 warnings   44/44 tests pass
+
+   and the five gates with the system Capstone 4.0.2: 44/44 each (tests/run_gates.sh).

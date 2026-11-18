@@ -1,0 +1,50 @@
+A-057: test_thread_pool failed on the author's machine after the A-056 change (found 2026-11-17, from the author's log of the first run of commit fcbde1a)
+
+1. The failure (DELTA-FORCE, Debug, GCC 15.2.0, Capstone 5.0.7). 43 of 44 tests passed:
+
+     6/44 Test  #6: test_thread_pool .................Subprocess aborted***Exception:   6.27 sec
+     1 threads, expected 2
+     test_thread_pool.c:82: expect_threads: Assertion `!"threads were left running"' failed.
+
+   In the sandbox the same commit had passed under all five gates.
+
+2. The cause. The test counts the threads of the process (/proc/self/task) and compares the count with a baseline it took earlier.
+   A baseline is wrong when it is taken while a thread that has already been joined is still listed: pthread_join returns when the
+   thread has cleared its id, a little before the kernel removes the thread from /proc/self/task. Normally that is some microseconds;
+   on a loaded or virtual machine it can be much longer. The baseline is then one too high, the thread goes, and the count can never
+   reach it again: expect_threads waits 5 s, which is the 6.27 s of the log, and fails with "1 threads, expected 2".
+   The test took a baseline at the start of four tests, two of them right after the test before had joined threads, and A-056 added
+   a fifth, after a loop that took "the count did not change for 20 ms" to mean "no thread is leaving". The test of the commit
+   before (2b53d8a era) has the same weakness in its four per-test baselines; it passed there by timing.
+
+3. Reproduction. tools/slow_reap.py (new) runs a program under ptrace. The kernel keeps an exited thread of a traced process,
+   listed in /proc/<pid>/task, until the tracer collects it, and the tool collects it a chosen time after the thread has gone. A probe
+   (a thread is started and joined; the program times how long until /proc shows one thread again) shows the tool does what it says:
+
+     delay asked         0 ms     10 ms     30 ms     40 ms
+     joined thread listed 0.3 ms   10.4 ms   30.5 ms   40.3 ms
+
+   The test of fcbde1a (built from git with the flags of the Debug tree) and the new test, each run under the tool (sandbox, Debug):
+
+     delay      fcbde1a                                                    new
+       0 ms     FAIL  "1 threads, expected 3"                               pass
+       3 ms     FAIL  "1 threads, expected 5"                               pass
+      10 ms     FAIL  "1 threads, expected 5"                               pass
+      25 ms     FAIL  test_arguments: count_threads() == baseline + 256     pass
+      50 ms     FAIL  test_arguments: count_threads() == baseline + 256     pass
+     100 ms     FAIL  "1 threads, expected 2"   (the message of the log)     pass
+
+   The failures at 25 ms and more are the warm-up of A-056 (it ends after 20 ms of an unchanged count, and the thread is still
+   listed); those at less are the per-test baselines. The new test also passes under the tool in the Release and TSan builds
+   (0, 25, 100 ms) and, with ASAN_OPTIONS=detect_leaks=0 (LeakSanitizer cannot run inside a tracer), in the ASan build.
+
+4. The change (tests/unit/test_thread_pool.c, no library code):
+   - One baseline for the whole program. warm_up_threads() starts and joins a thread, waits until that thread, by its kernel id,
+     is no longer in /proc/self/task, and then counts the threads. A thread that a sanitizer runtime keeps (TSan starts one at the
+     first pthread_create) is part of the count, a thread on its way out is not. Every test compares with that one number.
+   - main runs each test through RUN(), which waits for the threads to return to the baseline before the next test begins, and
+     names the test if they do not.
+
+5. The gates. tests/run_gates.sh runs test_thread_pool under tools/slow_reap.py with a delay of 25 ms in the Debug and the TSan gate
+   (skipped, and said so, where tracing is not allowed or python3 is missing). The Debug gate output reads
+   "slow teardown: test_thread_pool passes with exited threads kept listed for 25 ms".

@@ -3,10 +3,10 @@
 #
 #   tests/run_gates.sh [gate ...]       gates: debug release asan tsan valgrind   (default: all five)
 #
-#   debug     -DCMAKE_BUILD_TYPE=Debug
+#   debug     -DCMAKE_BUILD_TYPE=Debug; then test_thread_pool once more with exited threads kept listed (tools/slow_reap.py)
 #   release   -DCMAKE_BUILD_TYPE=Release; the build must also be free of compiler warnings
 #   asan      Debug + -DCBAE_SANITIZE=address (ASan + UBSan, a finding aborts; LeakSanitizer on)
-#   tsan      Debug + -DCBAE_SANITIZE=thread
+#   tsan      Debug + -DCBAE_SANITIZE=thread; and the same slow-teardown run
 #   valgrind  the debug tree, every test under valgrind --leak-check=full (CBAE_TEST_QUICK=1: the tests
 #             that sweep huge inputs skip their largest cases; every other configuration runs them all)
 #
@@ -35,6 +35,19 @@ configure_build() {   # <tree> <build type> [extra cmake args...]  -> build log 
     cmake --build "$tree" -j"$JOBS" >"$tree/build.log" 2>&1 || { echo "  build failed, see $tree/build.log"; tail -n 20 "$tree/build.log"; return 1; }
 }
 
+# The thread pool test again, with every thread that exits kept listed in /proc for 25 ms (tools/slow_reap.py): a test that counts the
+# threads of the process right after a join must survive the slowest teardown a loaded or virtual machine can show (A-057).
+run_slow_teardown() { # <tree>
+    command -v python3 >/dev/null || { echo "  slow teardown: python3 is not installed, skipped"; return 0; }
+    ( cd "$1/tests" && ASAN_OPTIONS=detect_leaks=0 python3 -I "$ROOT/tools/slow_reap.py" 25 ../bin/test_thread_pool >"$1/slow_teardown.log" 2>&1 ); local rc=$?
+    case $rc in
+        0)  echo "  slow teardown: test_thread_pool passes with exited threads kept listed for 25 ms" ;;
+        77) echo "  slow teardown: tracing is not allowed here, skipped" ;;
+        *)  echo "  FAILED: test_thread_pool with exited threads kept listed for 25 ms (see $1/slow_teardown.log)"
+            tail -n 8 "$1/slow_teardown.log" | sed 's/^/    /'; return 1 ;;
+    esac
+}
+
 run_ctest() {         # <tree>
     ( cd "$1" && ctest -j"$JOBS" --output-on-failure >"$1/ctest.log" 2>&1 ); local rc=$?
     tail -n 4 "$1/ctest.log" | sed 's/^/  /'
@@ -42,7 +55,7 @@ run_ctest() {         # <tree>
     return $rc
 }
 
-gate_debug()   { configure_build "$GATES/debug" Debug && run_ctest "$GATES/debug"; }
+gate_debug()   { configure_build "$GATES/debug" Debug && run_ctest "$GATES/debug" && run_slow_teardown "$GATES/debug"; }
 gate_release() {
     configure_build "$GATES/release" Release || return 1
     local w; w=$(grep -c 'warning:' "$GATES/release/build.log")
@@ -55,7 +68,7 @@ gate_asan() {
 }
 gate_tsan() {
     configure_build "$GATES/tsan" Debug -DCBAE_SANITIZE=thread || return 1
-    TSAN_OPTIONS=halt_on_error=1:second_deadlock_stack=1 run_ctest "$GATES/tsan"
+    TSAN_OPTIONS=halt_on_error=1:second_deadlock_stack=1 run_ctest "$GATES/tsan" && run_slow_teardown "$GATES/tsan"
 }
 gate_valgrind() {
     command -v valgrind >/dev/null || { echo "  valgrind is not installed"; return 1; }

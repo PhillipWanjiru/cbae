@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/syscall.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -71,32 +72,50 @@ static int count_threads(void) {
     return n;
 }
 
-/* The process is back to @p baseline threads. A joined thread can take a moment to leave /proc, so wait for it;
- * a thread that was left running never leaves. */
-static void expect_threads(int baseline) {
+/* The process is back to @p baseline threads. A joined thread is not removed from /proc/self/task until the kernel has finished with
+ * it, which takes a moment and on a loaded or virtual machine can take much longer, so wait for it; a thread that was left running
+ * never leaves. */
+static bool threads_settle(int baseline) {
     for (int i = 0; i < 5000; i++) {
-        if (count_threads() == baseline) return;
+        if (count_threads() == baseline) return true;
         usleep(1000);
     }
+    return false;
+}
+
+static void expect_threads(int baseline) {
+    if (threads_settle(baseline)) return;
     fprintf(stderr, "%d threads, expected %d\n", count_threads(), baseline);
     assert(!"threads were left running");
 }
 
-/* A sanitizer's runtime can start a thread of its own the first time the program starts one, and keep it: TSan does. Every count
- * taken before that would then be one short for good, so one thread is started and joined before the first count, and the
- * count is let settle (a joined thread can take a moment to leave /proc). */
-static void *idle(void *arg) { return arg; }
+/* The number of threads of the process when no pool exists, counted once by warm_up_threads() and used by every test. A count taken
+ * at the start of each test would include a thread that the test before had joined and the kernel had not yet removed, and be one
+ * too high for the rest of that test. */
+static int g_baseline;
+
+static _Atomic int g_warm_tid;
+static void *warm_up_thread(void *arg) { atomic_store(&g_warm_tid, (int)syscall(SYS_gettid)); return arg; }
+
+static bool task_listed(int tid) {
+    char path[64];
+    snprintf(path, sizeof path, "/proc/self/task/%d", tid);
+    return access(path, F_OK) == 0;
+}
+
+/* A sanitizer's runtime can start a thread of its own the first time the program starts one, and keep it: TSan does. A count taken
+ * before that would be one short for good, so one thread is started and joined first. pthread_join returns a little before the
+ * kernel removes the thread, so wait until that thread, by its id, is gone; the count after that is what a process with no pool has,
+ * whatever the runtime keeps. */
 static void warm_up_threads(void) {
     pthread_t t;
-    assert(__real_pthread_create(&t, NULL, idle, NULL) == 0);
+    assert(__real_pthread_create(&t, NULL, warm_up_thread, NULL) == 0);   /* not the wrapped call: the refusals of this test are not involved */
     assert(pthread_join(t, NULL) == 0);
-    int last = count_threads();
-    for (int i = 0, same = 0; i < 5000 && same < 20; i++) {
-        usleep(1000);
-        const int now = count_threads();
-        same = now == last ? same + 1 : 0;
-        last = now;
-    }
+    const int tid = atomic_load(&g_warm_tid);
+    assert(tid > 0);
+    for (int i = 0; i < 10000 && task_listed(tid); i++) usleep(1000);
+    assert(!task_listed(tid));
+    g_baseline = count_threads();
 }
 
 static void sleep_ms(long ms) {
@@ -127,7 +146,7 @@ static void test_arguments(void) {
         assert(p == NULL);                                       /* the output is empty on every failure */
     }
 
-    const int baseline = count_threads();
+    const int baseline = g_baseline;
     assert(cbae_thread_pool_create(&p, CBAE_THREAD_POOL_MAX_THREADS) == CBAE_OK);          /* the largest pool */
     assert(count_threads() == baseline + CBAE_THREAD_POOL_MAX_THREADS);
     cbae_thread_pool_destroy(p);
@@ -289,7 +308,7 @@ static void test_late_submission_refused(void) {
 static void test_create_destroy_cycles(void) {
     const int cycles = QUICK ? 60 : 300;
     atomic_store(&g_count, 0);
-    const int baseline = count_threads();
+    const int baseline = g_baseline;
     for (int i = 0; i < cycles; i++) {
         cbae_thread_pool_t *p;
         assert(cbae_thread_pool_create(&p, 3) == CBAE_OK);
@@ -326,7 +345,7 @@ static void test_many_submitters(void) {
 
 static void test_system_refuses(void) {
     enum { WORKERS = 4, CALLS = 3 + WORKERS };                   /* one lock, two condition variables, one thread per worker */
-    const int baseline = count_threads();
+    const int baseline = g_baseline;
     for (int k = 1; k <= CALLS; k++) {
         cbae_thread_pool_t *p = (cbae_thread_pool_t *)(uintptr_t)1;
         pj_arm(k);
@@ -371,7 +390,7 @@ static cbae_err_t pool_body(void *ctx, uint64_t failing) {
 }
 
 static void test_allocation_failure(void) {
-    const int baseline = count_threads();
+    const int baseline = g_baseline;
     const oom_report_t r = oom_sweep(pool_body, NULL, true);
     assert(r.allocations == 2 + 5);                              /* the pool, its thread table, five queue entries */
     assert(r.runs > 0 && r.reported == r.runs && r.swallowed == 0);
@@ -379,20 +398,30 @@ static void test_allocation_failure(void) {
     PASS("every allocation failure is reported (create and submit) and leaves nothing behind");
 }
 
+/* After every test the threads it started are gone, so the next one starts from g_baseline. */
+#define RUN(test)                                                                                                    \
+    do {                                                                                                             \
+        test();                                                                                                      \
+        if (!threads_settle(g_baseline)) {                                                                           \
+            fprintf(stderr, "%s: %d threads, expected %d\n", #test, count_threads(), g_baseline);                    \
+            assert(!"a test left threads running");                                                                  \
+        }                                                                                                            \
+    } while (0)
+
 int main(void) {
     printf("=== test_thread_pool ===\n");
     warm_up_threads();
-    test_arguments();
-    test_every_task_runs_once();
-    test_order_with_one_worker();
-    test_wait();
-    test_tasks_submit_tasks();
-    test_destroy_runs_the_queue();
-    test_late_submission_refused();
-    test_create_destroy_cycles();
-    test_many_submitters();
-    test_system_refuses();
-    test_allocation_failure();
+    RUN(test_arguments);
+    RUN(test_every_task_runs_once);
+    RUN(test_order_with_one_worker);
+    RUN(test_wait);
+    RUN(test_tasks_submit_tasks);
+    RUN(test_destroy_runs_the_queue);
+    RUN(test_late_submission_refused);
+    RUN(test_create_destroy_cycles);
+    RUN(test_many_submitters);
+    RUN(test_system_refuses);
+    RUN(test_allocation_failure);
     printf("All thread pool tests passed.\n");
     return 0;
 }

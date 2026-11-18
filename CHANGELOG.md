@@ -5,6 +5,27 @@ The phase plan is in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Phase 4.5 — audit of Phases 1–4 (in progress)
 
+### Checkpoint 1 — second run on the author's machine: the thread-pool test again (2026-11-18)
+
+The author's run of `fcbde1a` on DELTA-FORCE (Debug, GCC 15.2.0, Capstone 5.0.7) passed 43 of 44 tests, and the push worked. The
+failure was `test_thread_pool` ("1 threads, expected 2"): a flaw of the test, in part introduced by the A-056 change. The
+library was not at fault. Evidence is in `docs/audit/evidence/`.
+
+- **A-057** — the test took its thread-count baseline while a thread that had already been joined could still be listed in
+  `/proc/self/task`, which is possible for as long as the kernel takes to finish with it. `tools/slow_reap.py` (new) reproduces
+  that on demand: the version you ran fails with the exited threads kept listed for 0 to 100 ms, the new one passes. The test
+  now takes one baseline for the whole program, after the warm-up thread has left `/proc` (waited for by its thread id), and
+  checks after every test that the threads are back to it. `tests/run_gates.sh` now also runs the test under the tool (Debug
+  and TSan gates; skipped where tracing is not allowed).
+- **A-058** — the whole tree was built and tested against Capstone 5.0.7 in the sandbox for the first time (until now only
+  4.0.2): Debug 44/44. Capstone 5's header trips `-Wpedantic` unless it is in a system directory, which would fail the
+  zero-warning Release gate for a Capstone installed elsewhere; the SQLite and Capstone include directories are now
+  `SYSTEM`.
+- **A-050** (lenient integration tests), first half: `test_loader_to_disasm` now checks the address, length, bytes, mnemonic,
+  class and operands of every instruction and the block's bounds and flags; it also passes with Capstone 5.0.7. The structural
+  comparison of the serializer test moved to `tests/unit/cir_compare.h`. The disassembler-to-CIR test is still to do.
+- Mutation campaigns of the dominance code (373 mutants) are running; results are not recorded yet.
+
 ### Checkpoint 1 — first run on the author's machine: two test fixes (2026-11-16)
 
 The author's first run of the repository on DELTA-FORCE (Debug, GCC 15.2.0, Capstone 5.0.7, SQLite 3.46.1) passed 43 of 44
